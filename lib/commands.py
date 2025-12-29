@@ -324,9 +324,32 @@ worker_name = your-worker-name
         if not config.has_section('deployment'):
             config.add_section('deployment')
 
-        # 1. API Key
-        print("\n[1/3] CloudFlare API Key")
-        print("     Get this from CloudFlare Dashboard > My Profile > API Tokens")
+        # 1. Auth type selection
+        print("\n[1] Authentication Method")
+        print("     1. API Token (recommended - scoped permissions)")
+        print("     2. Global API Key (legacy - full account access)")
+        current_auth = config.get('cloudflare', 'auth_type', fallback='token')
+        default_choice = '1' if current_auth == 'token' else '2'
+        auth_choice = input(f"     Select option [{default_choice}]: ").strip() or default_choice
+
+        if auth_choice == '2':
+            auth_type = 'global_key'
+            total_steps = 5
+        else:
+            auth_type = 'token'
+            total_steps = 4
+
+        config.set('cloudflare', 'auth_type', auth_type)
+        print()
+
+        # 2. API Key/Token
+        if auth_type == 'token':
+            print(f"[2/{total_steps}] CloudFlare API Token")
+            print("     Get this from CloudFlare Dashboard > My Profile > API Tokens")
+        else:
+            print(f"[2/{total_steps}] CloudFlare Global API Key")
+            print("     Get this from CloudFlare Dashboard > My Profile > API Keys > Global API Key")
+
         current_key = config.get('cloudflare', 'api_key', fallback='')
         if current_key and current_key != 'YOUR_CLOUDFLARE_API_KEY_HERE':
             masked_key = current_key[:10] + '...' + current_key[-4:]
@@ -341,8 +364,27 @@ worker_name = your-worker-name
         config.set('cloudflare', 'api_key', api_key)
         print()
 
-        # 2. Account ID
-        print("[2/3] CloudFlare Account ID")
+        # 3. Account Email (only for Global API Key)
+        account_email = ''
+        if auth_type == 'global_key':
+            print(f"[3/{total_steps}] CloudFlare Account Email")
+            print("     The email address associated with your CloudFlare account")
+            current_email = config.get('cloudflare', 'account_email', fallback='')
+            if current_email:
+                account_email = input(f"     Enter account email [{current_email}]: ").strip() or current_email
+            else:
+                account_email = input("     Enter account email: ").strip()
+
+            if not account_email:
+                print("     [!] Email required for Global API Key auth")
+                return 1
+
+            config.set('cloudflare', 'account_email', account_email)
+            print()
+
+        # Account ID
+        step_num = 4 if auth_type == 'global_key' else 3
+        print(f"[{step_num}/{total_steps}] CloudFlare Account ID")
         print("     Get this from CloudFlare Dashboard > Workers & Pages")
         current_account = config.get('cloudflare', 'account_id', fallback='')
         if current_account and current_account != 'YOUR_CLOUDFLARE_ACCOUNT_ID_HERE':
@@ -359,7 +401,7 @@ worker_name = your-worker-name
 
         # Test API credentials and get account subdomain
         print("[*] Testing CloudFlare API credentials...")
-        success, result = test_cloudflare_api(api_key, account_id)
+        success, result = test_cloudflare_api(api_key, account_id, auth_type, account_email)
 
         if not success:
             print(f"[!] API test failed: {result}")
@@ -379,8 +421,8 @@ worker_name = your-worker-name
 
         print()
 
-        # 3. Worker name
-        print("[3/3] Worker Name")
+        # Worker name (final step)
+        print(f"[{total_steps}/{total_steps}] Worker Name")
         print(f"     Your worker will be deployed to: <worker-name>.{account_subdomain}.workers.dev")
         current_worker = config.get('deployment', 'worker_name', fallback='')
         if current_worker and current_worker != 'your-worker-name':
@@ -694,10 +736,17 @@ worker_name = your-worker-name
         api_key = cfg.get('cloudflare', 'api_key', fallback='')
         account_id = cfg.get('cloudflare', 'account_id', fallback='')
         account_subdomain = cfg.get('cloudflare', 'account_subdomain', fallback='')
+        auth_type = cfg.get('cloudflare', 'auth_type', fallback='token')
+        account_email = cfg.get('cloudflare', 'account_email', fallback='')
         worker_name = cfg.get('deployment', 'worker_name', fallback='')
 
         if not api_key or not account_id:
             print("[!] CloudFlare credentials incomplete")
+            return 1
+
+        if auth_type == 'global_key' and not account_email:
+            print("[!] Account email required for Global API Key auth")
+            print("    Run: python3 tokenflare.py configure cf")
             return 1
 
         if not worker_name:
@@ -708,9 +757,13 @@ worker_name = your-worker-name
         update_wrangler_field(self.wrangler_toml, 'name', worker_name)
         update_wrangler_field(self.wrangler_toml, 'account_id', account_id)
 
-        # 4. Set environment for wrangler
+        # 4. Set environment for wrangler based on auth type
         env = os.environ.copy()
-        env['CLOUDFLARE_API_TOKEN'] = api_key
+        if auth_type == 'global_key':
+            env['CLOUDFLARE_API_KEY'] = api_key
+            env['CLOUDFLARE_EMAIL'] = account_email
+        else:
+            env['CLOUDFLARE_API_TOKEN'] = api_key
         env['CLOUDFLARE_ACCOUNT_ID'] = account_id
 
         print(f"[*] Deploying worker '{worker_name}' to CloudFlare...")

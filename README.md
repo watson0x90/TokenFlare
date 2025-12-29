@@ -90,10 +90,11 @@ User-Agent: TokenFlare/1.0 For_Authorised_Testing_Only
 ## Acknowledgements
 
 
-any Thanks to:
+Many Thanks to:
 - [TE](https://github.com/tdejmp) - for helping, debugging, teaching me a ton and otherwise being an awesome human being.
 - [Dave @Cyb3rC3lt](https://github.com/Cyb3rC3lt/) - for creating our v1 internal prod Worker.
 - [Zolderio](https://github.com/zolderio/) - for creating the prototype PoC Worker that started it all.
+- [ChoiSG](https://github.com/ChoiSG) - for flagging Global API Key support.
 
 ## Disclaimer
 

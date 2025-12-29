@@ -156,19 +156,31 @@ def update_wrangler_field(file_path: Union[str, Path], field_name: str, value: s
         f.writelines(lines)
 
 
-def test_cloudflare_api(api_key: str, account_id: str) -> Tuple[bool, str]:
+def test_cloudflare_api(api_key: str, account_id: str, auth_type: str = 'token', account_email: str = '') -> Tuple[bool, str]:
     """
     Test CloudFlare API credentials and get account subdomain
+
+    Supports both API Token (auth_type='token') and Global API Key (auth_type='global_key').
+    Global API Key requires account_email.
 
     Returns: (success: bool, subdomain: str or error_message: str)
     """
     try:
         # Call CloudFlare API to get account details
         url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}'
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
+
+        # Set headers based on auth type
+        if auth_type == 'global_key':
+            headers = {
+                'X-Auth-Email': account_email,
+                'X-Auth-Key': api_key,
+                'Content-Type': 'application/json'
+            }
+        else:  # token (default)
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
 
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as response:
