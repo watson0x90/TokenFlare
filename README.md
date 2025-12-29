@@ -26,7 +26,9 @@ Companion blog post: [Link](https://labs.jumpsec.com/tokenflare-serverless-AiTM-
   sudo apt-get install -y nodejs
   npm install -g wrangler
   ```
-- CloudFlare account (for remote deployment)
+- CloudFlare account with API Token (for remote deployment):
+  1. [CloudFlare Dashboard](https://dash.cloudflare.com/profile/api-tokens) → Create Token
+  2. Use template **"Edit Cloudflare Workers"** → Include your account under Account Resources → [optional] IP filtering
 - [Optional] Certbot for local SSL: `sudo apt install certbot`
 
 >Note: Developed and tested on an Ubuntu VPS hosted on a public cloud. Running on localhost is possible but not recommended (for reasons such as port forwarding, DNS record pointing to you, etc)
