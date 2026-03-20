@@ -18,3 +18,6 @@ venv/
 # npm artifacts
 package.json
 package-lock.json
+
+# Spec documents
+auth-code-exchange.md
