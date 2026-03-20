@@ -1,0 +1,6 @@
+# TokenFlare dependencies
+# All dependencies are Python standard library - no third-party packages required.
+# This file is included for completeness.
+#
+# Required stdlib modules: os, sys, subprocess, shutil, uuid, logging,
+#                          configparser, pathlib, argparse

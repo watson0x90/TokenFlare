@@ -96,24 +96,34 @@ def get_wrangler_command() -> Optional[List[str]]:
 # ============================================================
 
 def is_root() -> bool:
-    """Check if running as root"""
-    return os.geteuid() == 0
+    """Check if running as root/admin (cross-platform)"""
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
+    else:
+        return os.geteuid() == 0
 
 
 def require_root(command_description: str) -> bool:
     """
-    Check if running as root, exit with helpful message if not
+    Check if running as root/admin, exit with helpful message if not
 
     Args:
         command_description: Description of what needs root (e.g., "deploy local")
 
     Returns:
-        True if root, exits otherwise
+        True if root/admin, exits otherwise
     """
     if not is_root():
-        print(f"\n[!] The '{command_description}' command requires root privileges")
+        print(f"\n[!] The '{command_description}' command requires elevated privileges")
         print(f"    Reason: Binding to port 443 and/or installing system packages")
-        print(f"\n    Run: sudo python3 tokenflare.py {command_description}")
-        # print(f"\n    Note: TokenFlare must be installed globally to work with sudo")
+        if sys.platform == 'win32':
+            print(f"\n    Run from an Administrator command prompt/terminal")
+            print(f"    Or use a high port (e.g., 8443) with wrangler dev directly")
+        else:
+            print(f"\n    Run: sudo python3 tokenflare.py {command_description}")
         sys.exit(1)
     return True

@@ -5,5 +5,16 @@ node_modules/*
 tokenflare.cfg
 certs/*.pem
 certs/*.key
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+venv/
+
+# npm artifacts
+package.json
+package-lock.json
