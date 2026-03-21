@@ -172,22 +172,26 @@ worker_name = your-worker-name
         """Prompt for OAuth URL selection"""
         print("[3/8] OAuth URL Selection")
         print("     Choose the Microsoft OAuth flow to use:")
+        print()
         for i, (key, display) in enumerate(OAUTH_DISPLAY_NAMES.items(), 1):
             print(f"     {i}. {display}")
-        print("     4. Custom (provide your own)")
+        print(f"     {len(OAUTH_DISPLAY_NAMES) + 1}. Custom (provide your own)")
+        print()
+        print("     Tip: Option 1 (Graph + FOCI) is recommended for most engagements.")
+        print("     It provides a refresh token for persistent access and FOCI family")
+        print("     token exchange across Office, Teams, Outlook, OneDrive, etc.")
+        print("     Use with tokenflare-webhook.py for automatic token exchange.")
 
-        # Map user choice to oauth key
-        choice_map = {
-            '1': 'officehome',
-            '2': 'teams',
-            '3': 'intune'
-        }
+        # Build choice map dynamically from OAUTH_DISPLAY_NAMES
+        oauth_keys = list(OAUTH_DISPLAY_NAMES.keys())
+        choice_map = {str(i + 1): key for i, key in enumerate(oauth_keys)}
+        custom_choice = str(len(oauth_keys) + 1)
 
         choice = input("     Select option [1]: ").strip() or '1'
-        if choice == '4':
+        if choice == custom_choice:
             oauth_url = input("     Enter custom OAuth URL: ").strip()
         else:
-            oauth_key = choice_map.get(choice, 'officehome')
+            oauth_key = choice_map.get(choice, oauth_keys[0])
             oauth_url = OAUTH_URLS[oauth_key]
         print()
         return oauth_url

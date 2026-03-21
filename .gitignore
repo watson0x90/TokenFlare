@@ -21,3 +21,8 @@ package-lock.json
 
 # Spec documents
 auth-code-exchange.md
+
+# Loot / captured credentials (NEVER commit these)
+loot.json
+*.loot
+*.jsonl
