@@ -24,6 +24,7 @@ LOCAL_PHISHING_DOMAIN = ""
 # Supports: Slack, Discord, Teams, or any generic webhook URL
 # WEBHOOK_URL = "https://discordapp.com/api/webhooks/YOUR_DISCORD_WEBHOOK"
 # WEBHOOK_URL = "https://webhook.site/YOUR_GENERIC_WEBHOOK_btw_webhook_site_for_testing_only"
+WEBHOOK_URL = "http://localhost:9999"
 
 # --- Debugging ---
 DEBUGGING="true"
