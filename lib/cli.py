@@ -54,7 +54,7 @@ def dispatch_command(app: TokenFlare, args: argparse.Namespace, parser: argparse
             'ssl': app.commands.cmd_configure_ssl,
         },
         'deploy': {
-            'local': app.commands.cmd_deploy_local,
+            'local': lambda: app.commands.cmd_deploy_local(args),
             'remote': app.commands.cmd_deploy_remote,
         },
         'status': lambda: app.commands.cmd_status(get_lure_url=getattr(args, 'get_lure_url', False)),
@@ -114,7 +114,21 @@ def create_parser() -> Tuple[argparse.ArgumentParser, Dict[str, argparse.Argumen
     # Deploy command
     parser_deploy = subparsers.add_parser('deploy', help='Deploy TokenFlare worker')
     deploy_sub = parser_deploy.add_subparsers(dest='deploy_type', help='Deployment type')
-    deploy_sub.add_parser('local', help='Deploy locally with wrangler dev')
+    deploy_local_parser = deploy_sub.add_parser('local', help='Deploy locally with wrangler dev')
+    deploy_local_parser.add_argument('--tokensmith-url', type=str, default=None,
+        help='TokenSmith URL for session launcher integration')
+    deploy_local_parser.add_argument('--auto-launch', action='store_true',
+        help='Auto-launch browser session after token capture')
+    deploy_local_parser.add_argument('--launch-target', default='outlook',
+        help='Target app for auto-launch (default: outlook)')
+    deploy_local_parser.add_argument('--auto-discover', action='store_true',
+        help='Auto-start SSO discovery after token capture')
+    deploy_local_parser.add_argument('--discover-mode', default='stealth',
+        choices=['stealth', 'demo'], help='Discovery mode (default: stealth)')
+    deploy_local_parser.add_argument('--webhook-port', type=int, default=9999,
+        help='Webhook listener port (default: 9999)')
+    deploy_local_parser.add_argument('--loot-file', type=str, default=None,
+        help='Log captures to file (JSONL)')
     deploy_sub.add_parser('remote', help='Deploy to CloudFlare')
 
     # Status command

