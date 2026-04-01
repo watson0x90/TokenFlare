@@ -708,7 +708,7 @@ worker_name = your-worker-name
 
         # Ensure WEBHOOK_URL points to local webhook listener
         current_webhook = vars_section.get('WEBHOOK_URL', '')
-        local_webhook = f'http://localhost:{webhook_port}'
+        local_webhook = f'http://localhost:{webhook_port}/webhook'
         if not current_webhook or 'CHANGEME' in current_webhook:
             update_wrangler_var(self.wrangler_toml, 'WEBHOOK_URL', local_webhook)
             print(f"[*] Set WEBHOOK_URL to {local_webhook}")
