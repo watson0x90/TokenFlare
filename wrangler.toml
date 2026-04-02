@@ -87,4 +87,11 @@ CUSTOM_USER_AGENT='TokenFlare/1.0 For_Authorised_Testing_Only'
 # and fall back to phishable MFA methods (push, TOTP, SMS)
 FIDO2_DOWNGRADE = "false"
 
-
+# ── Workers KV Session Storage ──────────────────────────────────────
+# Stores per-victim session timelines correlating all auth flow captures.
+# Create the namespace: wrangler kv:namespace create "SESSIONS"
+# For local dev, wrangler automatically creates a local KV store.
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "tokenflare_sessions"
+preview_id = "tokenflare_sessions_preview"
