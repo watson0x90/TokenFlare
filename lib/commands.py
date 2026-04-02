@@ -178,10 +178,10 @@ worker_name = your-worker-name
             print(f"     {i}. {display}")
         print(f"     {len(OAUTH_DISPLAY_NAMES) + 1}. Custom (provide your own)")
         print()
-        print("     Tip: Option 1 (Graph + FOCI) is recommended for most engagements.")
-        print("     It provides a refresh token for persistent access and FOCI family")
-        print("     token exchange across Office, Teams, Outlook, OneDrive, etc.")
-        print("     Use with tokenflare-webhook.py for automatic token exchange.")
+        print("     Tip: Option 1 (Microsoft Office + FOCI) is recommended for most engagements.")
+        print("     It provides a refresh token with the broadest default consent and FOCI")
+        print("     family exchange across 38 clients (Teams, Outlook, OneDrive, Azure CLI, etc.)")
+        print("     One capture covers all FOCI clients via TokenSmith's FOCI Discovery.")
 
         # Build choice map dynamically from OAUTH_DISPLAY_NAMES
         oauth_keys = list(OAUTH_DISPLAY_NAMES.keys())
