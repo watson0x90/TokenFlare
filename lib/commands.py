@@ -77,23 +77,33 @@ class Commands:
         self.logger.debug(f"Generated UUIDs: {uuids[:3]}...")  # Show first 3 in debug
         print(f"    ✓ Generated {len(uuids)} UUIDs")
 
-        # Step 4: Update wrangler.toml with UUIDs and domain
-        print("\n[*] Updating wrangler.toml with UUIDs and domain...")
-        if self.wrangler_toml.exists():
-            try:
-                # Use surgical update to preserve comments
-                uuid_string = ', '.join(uuids)
-                update_wrangler_var(self.wrangler_toml, 'LURE_UUID', uuid_string)
-                update_wrangler_var(self.wrangler_toml, 'LOCAL_PHISHING_DOMAIN', domain)
-                print(f"    ✓ Updated {self.wrangler_toml}")
-            except Exception as e:
-                self.logger.error(f"Failed to update wrangler.toml: {e}")
+        # Step 4: Ensure wrangler.toml exists (copy from template if missing)
+        print("\n[*] Checking wrangler.toml...")
+        if not self.wrangler_toml.exists():
+            template_path = self.project_root / 'templates' / 'wrangler.toml'
+            if template_path.exists():
+                import shutil as _shutil
+                _shutil.copy2(template_path, self.wrangler_toml)
+                print(f"    ✓ Created wrangler.toml from template")
+            else:
+                print(f"    [!] wrangler.toml not found and no template available at {template_path}")
+                print("    Please create wrangler.toml manually or copy from templates/wrangler.toml")
                 return 1
         else:
-            self.logger.warning(f"wrangler.toml not found at {self.wrangler_toml}")
-            print("    [!] wrangler.toml not found, skipping UUID update")
+            print(f"    ✓ wrangler.toml exists")
 
-        # Step 5: Generate self-signed certificate
+        # Step 5: Update wrangler.toml with UUIDs and domain
+        print("\n[*] Updating wrangler.toml with UUIDs and domain...")
+        try:
+            uuid_string = ', '.join(uuids)
+            update_wrangler_var(self.wrangler_toml, 'LURE_UUID', uuid_string)
+            update_wrangler_var(self.wrangler_toml, 'LOCAL_PHISHING_DOMAIN', domain)
+            print(f"    ✓ Updated {self.wrangler_toml}")
+        except Exception as e:
+            self.logger.error(f"Failed to update wrangler.toml: {e}")
+            return 1
+
+        # Step 6: Generate self-signed certificate
         print(f"\n[*] Generating self-signed certificate for {domain}...")
         cert_path = self.certs_dir / "cert.pem"
         key_path = self.certs_dir / "key.pem"
@@ -105,7 +115,7 @@ class Commands:
         print(f"    ✓ Certificate: {cert_path}")
         print(f"    ✓ Private key: {key_path}")
 
-        # Step 6: Create tokenflare.cfg.example
+        # Step 7: Create tokenflare.cfg.example
         print("\n[*] Creating configuration template...")
         example_config = self.project_root / "tokenflare.cfg.example"
 
@@ -126,7 +136,7 @@ worker_name = your-worker-name
             f.write(config_content)
         print(f"    ✓ Created {example_config}")
 
-        # Step 7: Summary
+        # Step 8: Summary
         print("\n" + "="*82)
         print("✓ Initialisation complete!")
         print("="*82)

