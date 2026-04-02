@@ -97,25 +97,28 @@ def update_wrangler_var(file_path: Union[str, Path], var_name: str, value: Union
     else:
         formatted_value = f'{var_name} = {value}'
 
-    # Find if variable exists
+    # Priority 1: Find existing UNCOMMENTED assignment
     var_found = False
     for i, line in enumerate(lines):
-        # Match variable assignment (with or without comments)
-        if line.strip().startswith(f'{var_name}=') or line.strip().startswith(f'{var_name} ='):
-            lines[i] = formatted_value + '\n'
-            var_found = True
-            break
-        # Also check for commented-out version
-        if line.strip().startswith(f'#{var_name}=') or line.strip().startswith(f'# {var_name} ='):
+        stripped = line.strip()
+        if (stripped.startswith(f'{var_name}=') or stripped.startswith(f'{var_name} =')) and not stripped.startswith('#'):
             lines[i] = formatted_value + '\n'
             var_found = True
             break
 
-    # If not found, add after [vars] section
+    # Priority 2: If no uncommented line, find first COMMENTED line and replace it
+    if not var_found:
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(f'# {var_name} =') or stripped.startswith(f'#{var_name}=') or stripped.startswith(f'# {var_name}='):
+                lines[i] = formatted_value + '\n'
+                var_found = True
+                break
+
+    # Priority 3: If not found at all, add after [vars]
     if not var_found:
         for i, line in enumerate(lines):
             if line.strip() == '[vars]':
-                # Insert after the [vars] line
                 lines.insert(i + 1, formatted_value + '\n')
                 break
 
